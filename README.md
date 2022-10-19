@@ -81,9 +81,9 @@ A supporting `.json` file is used to specify the varying paths in which the data
 
 
 ### pretrain
-The library features a tool that can be called directly by the command `transcript_transformer`, featuring three main functions: `pretrain`, `train` and `impute`.
+The library features a tool that can be called directly by the command `transcript_transformer`, featuring three main functions: `pretrain`, `train` and `predict`.
 
-Conform with transformers trained for natural language processing objectives, a model can first be trained using self-supervised learning. Using a masked language modelling approach, the model is tasked to impute the classes of the masked input nucleotides. As such, a model is trained the 'semantics' of transcript sequences. The approach is similar to the one described by [Zaheer et al. ](https://arxiv.org/abs/2007.14062).
+Conform with transformers trained for natural language processing objectives, a model can first be trained using self-supervised learning. Using a masked language modelling approach, the model is tasked to predict the classes of the masked input nucleotides. As such, a model is trained the 'semantics' of transcript sequences. The approach is similar to the one described by [Zaheer et al. ](https://arxiv.org/abs/2007.14062).
 
 <details><summary>pretrain main arguments</summary>
 
@@ -126,14 +126,14 @@ transcript_transformer train input_data.json --val 1 13 --test 2 14 --max_epochs
     
 </details>
 
-### impute
+### predict
 
-The impute function is used to obtain the predicted positions of TIS sites on a transcript. These predictions return probabilities for all nucleotide positions on the transcript, and are saved as numpy arrays. The code can handle the RNA sequence as input, or a list of transcripts given in a `.fa` or `.npy` format. Note that `.fa` and `.npy` formats are only supported for models trained on solely the transcript nucleotide sequence.
+The predict function is used to obtain the predicted positions of TIS sites on a transcript. These predictions return probabilities for all nucleotide positions on the transcript, and are saved as numpy arrays. The code can handle the RNA sequence as input, or a list of transcripts given in a `.fa` or `.npy` format. Note that `.fa` and `.npy` formats are only supported for models trained on solely the transcript nucleotide sequence.
 
-<details><summary>impute main arguments</summary>
+<details><summary>predict main arguments</summary>
 
 ```
-transcript_transformer impute -h
+transcript_transformer predict -h
 
 positional arguments:
   input_data              RNA sequence or path to `.fa` or `.h5` file
@@ -147,8 +147,8 @@ options:
 
 # Example
 
-transcript_transformer impute AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGGT RNA --output_type npy models/example_model.ckpt
-transcript_transformer impute data/example_data.fa fa --output_type npy models/example_model.ckpt
+transcript_transformer predict AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGGT RNA --output_type npy models/example_model.ckpt
+transcript_transformer predict data/example_data.fa fa --output_type npy models/example_model.ckpt
     
 ```
 
