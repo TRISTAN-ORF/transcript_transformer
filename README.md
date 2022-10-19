@@ -1,7 +1,8 @@
 # transcript_transformer
 
 [![PyPi Version](https://img.shields.io/pypi/v/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/)
-[![PyPi Version Alt](https://badge.fury.io/py/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/) [![PyPi Python Versions](https://img.shields.io/pypi/pyversions/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/) 
+[![PyPi Version Alt](https://badge.fury.io/py/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/)
+[![PyPi Python Versions](https://img.shields.io/pypi/pyversions/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/) 
 [![GitHub license](https://img.shields.io/github/license/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/blob/main/LICENSE.md)
 [![GitHub issues](https://img.shields.io/github/issues/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/issues)
 [![GitHub stars](https://img.shields.io/github/stars/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/stargazers)

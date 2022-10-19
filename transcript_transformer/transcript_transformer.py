@@ -34,11 +34,11 @@ class ParseArgs(object):
              Commands:
                pretrain  Pretrain a model using MLM objective
                train     Train a model to detect TIS locations on transcripts
-               impute    Impute TIS locations from transcript sequence
+               predict   Predict TIS locations from input data
             ''')
             parser.add_argument('command', help='Subcommand to run')
             args = parser.parse_args(sys.argv[1:2])
-            if args.command not in ['pretrain', 'train', 'impute']:
+            if args.command not in ['pretrain', 'train', 'predict']:
                 print('Unrecognized command')
                 parser.print_help()
                 exit(1)
@@ -48,7 +48,7 @@ class ParseArgs(object):
             elif args.command == 'train':
                 self.pretrain_train(mlm=False)
             else:
-                self.impute()
+                self.predict()
 
         def pretrain_train(self, mlm):
             parser = argparse.ArgumentParser(
@@ -149,8 +149,8 @@ class ParseArgs(object):
                 print('Training a TIS transformer with: {}'.format(args))
                 train(args)
 
-        def impute(self):
-            parser = argparse.ArgumentParser(description='Impute TIS locations',
+        def predict(self):
+            parser = argparse.ArgumentParser(description='Predict TIS locations',
                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
             parser.add_argument('input_data', type=str, metavar='input_data',
                                 help='RNA sequence or path to `.fa` file')
@@ -176,7 +176,7 @@ class ParseArgs(object):
             args = parser.parse_args(sys.argv[2:])
             
             print('Imputing labels from trained model: {}'.format(args))
-            impute(args)
+            predict(args)
 
 def parse_json(args):
     with open(args.data_path, 'r') as fh:
@@ -258,7 +258,7 @@ def train(args):
     trainer.fit(trans_model, datamodule=tr_loader)
     trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
 
-def impute(args):
+def predict(args):
     assert args.input_type in ['h5', 'fa', 'RNA'], "input type not valid, must be one of 'h5', 'fa', or 'RNA'"  
     device = torch.device('cuda') if args.gpus else torch.device('cpu')
     trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint)

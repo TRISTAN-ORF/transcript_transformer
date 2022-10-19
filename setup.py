@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="transcript transformer",
-    version="0.0.2",
+    version="0.0.4",
     author="Jim Clauwaert",
     author_email="jim.clauwaert@ugent.be",
     packages=["transcript_transformer"],
