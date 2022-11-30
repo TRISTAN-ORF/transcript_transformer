@@ -1,30 +1,34 @@
-# transcript_transformer
+<div align="center">
+<h1>transcript_transformer</h1> 
 
 [![PyPi Version](https://img.shields.io/pypi/v/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/)
 [![GitHub license](https://img.shields.io/github/license/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/blob/main/LICENSE.md)
 [![GitHub issues](https://img.shields.io/github/issues/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/issues)
 [![GitHub stars](https://img.shields.io/github/stars/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/stargazers)
-
+</div>
 
 Deep learning utility functions for processing and annotating transcript genome data.
 
 `transcript_transformer`  is constructed in concordance with the creation of the [TIS Transformer](https://www.biorxiv.org/content/10.1101/2021.11.18.468957v1) and Riboformer (to be released) studies. While some degree of modularity was incorporated in the design of `transcript_transformer`, it is not the main aim of the package. `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes use of the `hdf5` format for data loading and `pytorch-lightning` as a high-level interface for training and evaluation for deep learning models. Applying a custom bucketsampler, training times have been optimized. 
 
 ## Installation
-[`pytorch`](https://pytorch.org/get-started/locally/) needs to be separately installed by the user, as it features multiple options depending on the system available. 
+`pytorch` needs to be separately [installed by the user](https://pytorch.org/get-started/locally/). 
 
-Next, the package can be installed by running `pip install transcript-transformer`
+Next, the package can be installed running 
+```bash
+pip install transcript-transformer
+```
 
 ## Usage <a name="code"></a>
 
 ### Input data
-The input data is expected to be loaded from the `hdf5/h5` format. At its core, information is separated by transcript and information type. Information belonging to a single transcript is mapped according to the index they populate within each `h5py.dataset`, used to store different types of information. [Variable length arrays](https://docs.h5py.org/en/stable/special.html#arbitrary-vlen-data) are used to store the sequences and annotations of all transcripts under a single data set. 
+The input data is expected to be loaded from the `h5py/h5` format. Information is separated by transcript and information type. Information belonging to a single transcript is mapped according to the index they populate within each `h5py.dataset`, used to store different types of information. [Variable length arrays](https://docs.h5py.org/en/stable/special.html#arbitrary-vlen-data) are used to store the sequences and annotations of all transcripts under a single data set. 
 Sequences are stored using integer arrays following: `{A:0, T:1, C:2, G:3, N:4}`
-A possible `data.json` has the following structure:
+A possible `data.h5` has the following structure:
 
 
 ```
-GRCh38_v107.h5                              (h5py.file)
+data.h5                              (h5py.file)
     transcript                              (h5py.group)
     ├── tis                                 (h5py.dataset, dtype=vlen(int))
     ├── contig                              (h5py.dataset, dtype=str)
@@ -32,7 +36,7 @@ GRCh38_v107.h5                              (h5py.file)
     ├── seq                                 (h5py.dataset, dtype=vlen(int))
     ├── ribo                                (h5py.group)
     │   ├── SRR0000001                      (h5py.group)
-    │   │   ├── 5                           (h5py.group, dtype=vlen(int))
+    │   │   ├── 5                           (h5py.group)
     │   │   │   ├── data                    (h5py.dataset, dtype=vlen(int))
     │   │   │   ├── indices                 (h5py.dataset, dtype=vlen(int))
     │   │   │   ├── indptr                  (h5py.dataset, dtype=vlen(int))
@@ -41,27 +45,32 @@ GRCh38_v107.h5                              (h5py.file)
     │   ....
     
 ```
-![h5data](https://github.com/jdcla/transcript_transformer/raw/main/h5data.png)
+
+<div align="center">
+<img src="https://github.com/jdcla/transcript_transformer/raw/main/h5data.png" width="600">
+</div>
+
 
 Ribosome profiling data is saved by reads mapped to each transcript. Mapped reads are furthermore separated by their read length. As ribosome profiling data is often sparse, we made use of `scipy.sparse` to save data within the `h5` format. This allows us to save space and store matrix objects as separate arrays. Saving and loading of the data is achieved using the [h5max](https://github.com/jdcla/h5max) functions
 
-![h5max_pic](https://github.com/jdcla/h5max/raw/main/h5max.png)
-
+<div align="center">
+<img src="https://github.com/jdcla/h5max/raw/main/h5max.png" width="600">
+</div>
 
 
 
 ### Data loading
 A supporting `.json` file is used to specify the varying paths in which the data is stored. When no sequence information or ribosome profiling data is used, either entry `seq_path` or `ribo_path` can be set to `false`. For each ribosome profiling dataset, custom [P-site offsets](https://plastid.readthedocs.io/en/latest/glossary.html#term-P-site-offset) can be set per read length. 
 
-```
+```json
 {
   "h5_path":"data.h5",
   "exp_path":"transcript",
   "y_path":"tis",
   "chrom_path":"contig",
   "id_path":"id",
-  "seq_path":"seq",
-  "ribo_path":{
+  "seq":"seq",
+  "ribo":{
     SRR000001/5: {
       "25": 7,
       "26": 7,
@@ -85,7 +94,7 @@ The library features a tool that can be called directly by the command `transcri
 
 Conform with transformers trained for natural language processing objectives, a model can first be trained using self-supervised learning. Using a masked language modelling approach, the model is tasked to predict the classes of the masked input nucleotides. As such, a model is trained the 'semantics' of transcript sequences. The approach is similar to the one described by [Zaheer et al. ](https://arxiv.org/abs/2007.14062).
 
-<details><summary>pretrain main arguments</summary>
+<details><summary>pretrain arguments</summary>
 
 ```
 transcript_transformer pretrain -h
@@ -107,7 +116,7 @@ TransscriptFormer pretrain input_data.json --val 1 13 --test 2 14 --max_epochs 7
 ### train
 Training the model using on a binary classification objective. The input data is processed as one. A label is assigned to every input position. Using the processed data a model can be trained to detect TISs. 
 
-<details><summary>train main arguments</summary>
+<details><summary>train arguments</summary>
 
 ```
 transcript_transformer train -h
@@ -130,13 +139,13 @@ transcript_transformer train input_data.json --val 1 13 --test 2 14 --max_epochs
 
 The predict function is used to obtain the predicted positions of TIS sites on a transcript. These predictions return probabilities for all nucleotide positions on the transcript, and are saved as numpy arrays. The code can handle the RNA sequence as input, or a list of transcripts given in a `.fa` or `.npy` format. Note that `.fa` and `.npy` formats are only supported for models trained on solely the transcript nucleotide sequence.
 
-<details><summary>predict main arguments</summary>
+<details><summary>predict arguments</summary>
 
-```
+```bash
 transcript_transformer predict -h
 
 positional arguments:
-  input_data              RNA sequence or path to `.fa` or `.h5` file
+  input_data              RNA sequence or path to a `.fa` or `.h5` file
   input_type              Type of input, either one of ['RNA', 'npy', 'h5']
   checkpoint              path to checkpoint of trained model
 
@@ -160,7 +169,7 @@ Other flags determine the architecture of the model or tweaking the training pro
 
 <details><summary>Dataloader flags</summary>
 
-```
+```bash
 data loader arguments
 
   --max_seq_len int     maximum sequence length of transcripts (default: 25000)
@@ -368,7 +377,7 @@ The model returns predictions for every nucleotide on the transcripts. For each 
 
 <details>
 
-```
+```python
 >>> results = np.load('results.npy', allow_pickle=True)
 >>> results[0]
 array(['>ENST00000410304',
@@ -402,11 +411,9 @@ array(['>ENST00000410304',
 
 </details>
 
-#
-
 ## Citation <a name="citation"></a>
        
-```
+```latex
 @article {Clauwaert2021.11.18.468957,
 	author = {Clauwaert, Jim and McVey, Zahra and Gupta, Ramneek and Menschaert, Gerben},
 	title = {TIS Transformer: Re-annotation of the human proteome using deep learning},

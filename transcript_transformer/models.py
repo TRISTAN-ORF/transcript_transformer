@@ -36,8 +36,10 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
             self.ff_emb_1 = torch.nn.Linear(1,dim)
             self.ff_emb_2 = torch.nn.Linear(dim, 6*dim)
             self.ff_emb_3 = torch.nn.Linear(6*dim,dim)
-            self.scalar_emb = torch.nn.Sequential(self.ff_emb_1, self.relu, self.ff_emb_2, self.relu, self.ff_emb_3)
-            self.ribo_read_emb = torch.nn.Embedding(22, dim)
+            self.tanh = torch.nn.Tanh()
+            self.scalar_emb = torch.nn.Sequential(self.ff_emb_1, self.relu, self.ff_emb_2, self.relu, self.ff_emb_3, self.tanh)
+            self.ribo_count_emb = torch.nn.Embedding(1, dim)
+            self.ribo_read_emb = torch.nn.Embedding(21, dim)
         
         if x_seq:
             self.nuc_emb = torch.nn.Embedding(num_tokens, dim)
@@ -56,34 +58,33 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         
     def parse_embeddings(self, batch):
         xs = []
-        if 'ribo_multi' in batch.keys():
-            inp = batch['ribo_multi']
-            # relative signal strength per position (21 read lengths)
-            xs.append(self.scalar_emb(inp.sum(dim=-1).unsqueeze(-1)))
-            x_mask = (inp.sum(dim=-1) != 147)
-            # normalized read fraction per position
-            x = torch.nan_to_num(torch.div(inp, inp.sum(axis=-1).unsqueeze(-1)))
-            # linear combination between read length fraction and read length embedding
-            #xs.append(torch.einsum('ikj,jl->ikl', [x, self.ribo_read_emb(torch.arange(1,22).to(x.device))]))
-            xs.append(torch.einsum('ikj,jl->ikl', [x, self.ribo_read_emb.weight[1:]]))
-            
-        if 'ribo_single' in batch.keys():
-            inp = batch['ribo_single']
-            x_mask = (inp.squeeze(-1) != 7)
-            xs.append(self.scalar_emb(inp))
-            # linear combination between read length fraction (1) and read length embedding
-            xs.append(self.ribo_read_emb(torch.zeros(inp.shape[:2], dtype=torch.int).to(inp.device)))
+        if 'ribo' in batch.keys():
+            inp = batch['ribo']
+            # if offsets
+            if inp.shape[-1] == 1:
+                xs.append(self.scalar_emb(inp)*self.ribo_count_emb.weight)
+            # if no offsets
+            else:
+                counts = inp.sum(dim=-1).unsqueeze(-1) # bs, l, 1x
+                xs.append(self.scalar_emb(counts)*self.ribo_count_emb.weight)
+                # read fraction per position
+                x = torch.nan_to_num(torch.div(inp, inp.sum(axis=-1).unsqueeze(-1)))
+                # linear combination between read length fraction and read length embedding
+                xs.append(torch.einsum('ikj,jl->ikl', [x, self.ribo_read_emb.weight]))
             
         if 'seq' in batch.keys():
-            x_mask = batch['seq'] != 7
             xs.append(self.nuc_emb(batch['seq']))
             
         x_emb = torch.sum(torch.stack(xs), dim=0)
         
-        return x_emb, x_mask
+        return x_emb
             
     def forward(self, batch, y_mask):
-        x, x_mask = self.parse_embeddings(batch)
+        x_mask = torch.clone(y_mask)
+        x_mask[:,0] = 1
+        x_mask[torch.arange(x_mask.shape[0]), x_mask.sum(dim=1)] = 1
+        
+        x = self.parse_embeddings(batch)
         x += self.pos_emb(x)
         x = self.dropout(x)
         
@@ -99,7 +100,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         return x
 
     def training_step(self, batch, batch_idx):
-        y_mask = batch['y'] != 7
+        y_mask = batch['y'] != -1
         y_true = batch['y'][y_mask].view(-1)
 
         y_hat = self(batch, y_mask)
@@ -110,7 +111,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         return loss
         
     def validation_step(self, batch, batch_idx):
-        y_mask = batch['y'] != 7
+        y_mask = batch['y'] != -1
         y_true = batch['y'][y_mask].view(-1)
 
         y_hat = self(batch, y_mask)
@@ -123,7 +124,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         self.log('val_rocauc', self.val_rocauc, on_step=False, on_epoch=True, batch_size=y_mask.sum())
                 
     def test_step(self, batch, batch_idx, ):
-        y_mask = batch['y'] != 7
+        y_mask = batch['y'] != -1
         y_true = batch['y'][y_mask].view(-1)
 
         y_hat = self(batch, y_mask)
@@ -140,7 +141,6 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         y_true_grouped = torch.tensor_split(batch['y'][y_mask], splits)[:-1]
         #x_grouped = torch.tensor_split(batch['x'][y_mask], lens)
         
-        #return y_hat_grouped, y_true_grouped, x_grouped, batch['x_id']
         return y_hat_grouped, y_true_grouped, batch['x_id']
     
     def on_test_epoch_start(self):
@@ -209,23 +209,19 @@ class TranscriptMLM(pl.LightningModule):
     def parse_embeddings(self, batch):
         #TODO: implement randomization for non-seq inputs
         xs = []
-        if 'ribo_multi' in batch.keys():
-            inp = batch['ribo_multi']
-            # relative signal strength per position (21 read lengths)
-            xs.append(self.scalar_emb(inp.sum(dim=-1).unsqueeze(-1)))
-            x_mask = (inp.sum(dim=-1) != 147)
-            # normalized read fraction per position
-            x = torch.nan_to_num(torch.div(inp, inp.sum(axis=-1).unsqueeze(-1)))
-            # linear combination between read length fraction and read length embedding
-            #xs.append(torch.einsum('ikj,jl->ikl', [x, self.ribo_read_emb(torch.arange(1,22).to(x.device))]))
-            xs.append(torch.einsum('ikj,jl->ikl', [x, self.ribo_read_emb.weight[1:]]))
-            
-        if 'ribo_single' in batch.keys():
-            inp = batch['ribo_single']
-            x_mask = (inp.squeeze(-1) != 7)
-            xs.append(self.scalar_emb(inp))
-            # linear combination between read length fraction (1) and read length embedding
-            xs.append(self.ribo_read_emb(torch.zeros(inp.shape[:2], dtype=torch.int).to(inp.device)))
+        if 'ribo' in batch.keys():
+            inp = batch['ribo']
+            # if offsets
+            if len(inp.shape) == 3:
+                xs.append(self.scalar_emb(inp)*self.ribo_count_emb.weight)
+            # if no offsets
+            else:
+                counts = inp.sum(dim=-1).unsqueeze(-1) # bs, l, 1x
+                xs.append(self.scalar_emb(counts)*self.ribo_count_emb.weight)
+                # read fraction per position
+                x = torch.nan_to_num(torch.div(inp, inp.sum(axis=-1).unsqueeze(-1)))
+                # linear combination between read length fraction and read length embedding
+                xs.append(torch.einsum('ikj,jl->ikl', [x, self.ribo_read_emb.weight]))
             
         if 'seq' in batch.keys():
             x_mask = batch['seq'] != 7

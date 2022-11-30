@@ -2,7 +2,7 @@
 import h5py
 import numpy as np
 import torch
-from h5max import load_sparse_matrices
+from h5max import load_sparse
 from torch.nn.functional import pad
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
@@ -20,19 +20,19 @@ def collate_fn(batch):
     lens = np.array([len(s) for s in batch[2]])
     max_len = max(lens)
     
-    y_b = torch.LongTensor(np.array([np.pad(y,(1,1+l), constant_values=7) for y, l in zip(batch[2], max_len - lens)]))
+    y_b = torch.LongTensor(np.array([np.pad(y,(1,1+l), constant_values=-1) for y, l in zip(batch[2], max_len - lens)]))
     
     x_dict = {}
     for k in batch[1][0].keys():
-        # if the entries are multidimensional: positions x read lengths (reads)
+        # if the entries are multidimensional: positions , read lengths
         if len(batch[1][0][k].shape) > 1:
-            x_exp = [np.pad(x[k],((1,1),(0,0)), constant_values=((5,6),(0,0))) for x in batch[1]]
-            x_exp = [np.pad(x,((0,l),(0,0)), constant_values=((0,7),(0,0))) for x, l in zip(x_exp, max_len - lens)]
+            x_exp = [np.pad(x[k],((1,1),(0,0)), constant_values=((0,0),(0,0))) for x in batch[1]]
+            x_exp = [np.pad(x.astype(float),((0,l),(0,0)), constant_values=((0,0.5),(0,0))) for x, l in zip(x_exp, max_len - lens)]
             x_dict[k] = torch.FloatTensor(np.array(x_exp, dtype=float))
         
         # if the entries are single dimensional and float: positions (reads)
         elif batch[1][0][k].dtype == float:
-            x_exp = [np.concatenate(([5], x[k], [6], [7]*l)) for x, l in zip(batch[1], max_len - lens)]
+            x_exp = [np.concatenate(([0], x[k], [0], [0.5]*l)) for x, l in zip(batch[1], max_len - lens)]
             x_dict[k] = torch.FloatTensor(np.array(x_exp, dtype=float)).unsqueeze(-1)
         
         # if the entries are single dimensional and string: positions (nucleotides)
@@ -46,8 +46,6 @@ def collate_fn(batch):
 def local_shuffle(data, lens=None):
     if lens is None:
         lens = np.array([ts[0].shape[0] for ts in data])
-    elif type(lens) == list:
-        lens = np.array(lens)
     # get split idxs representing spans of 400
     splits = np.arange(1,max(lens),400)
     # get idxs
@@ -166,9 +164,11 @@ class h5pyDataModule(pl.LightningDataModule):
         # set idx shift value if multiple riboseq datasets are present
         set_idx_adj = np.max(idx_temp)+1
         set_idx = np.ravel([np.where(mask)[0]+(set_idx_adj*i) for i in np.arange(self.n_data)])
-        set_len = list(self.fh['tr_len'][mask])*self.n_data
+        set_len = np.array(list(self.fh['tr_len'][mask])*self.n_data)
+        # sort data
+        sort_idxs = np.argsort(set_len)
         
-        return set_idx, set_len, set_idx_adj
+        return set_idx[sort_idxs], set_len[sort_idxs], set_idx_adj
 
     def train_dataloader(self):
         batches = bucket(*local_shuffle(self.tr_idx, self.tr_len), self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
@@ -176,12 +176,12 @@ class h5pyDataModule(pl.LightningDataModule):
                           collate_fn=collate_fn, num_workers=self.num_workers, shuffle=True, batch_size=1)
 
     def val_dataloader(self):
-        batches = bucket(*local_shuffle(self.val_idx, self.val_len), self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
+        batches = bucket(self.val_idx, self.val_len, self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
         return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.val_idx_adj, batches), 
                          collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
     def test_dataloader(self):
-        batches = bucket(*local_shuffle(self.te_idx, self.te_len), self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
+        batches = bucket(self.te_idx, self.te_len, self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
         return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
@@ -206,7 +206,8 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         xs = []
         ys = []
         for idx_conc in self.batches[index]:
-            idx = idx_conc % self.idx_adj
+            # get adjusted idx if multiple datasets are used
+            idx = int(idx_conc % self.idx_adj)
             # get transcript IDs 
             x_ids.append(self.fh[self.id_path][idx])
             x_dict = {}
@@ -217,22 +218,24 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             if len(self.ribo_paths) > 0:
                 # obtain data set and adjuster
                 data_path = list(self.ribo_paths.keys())[idx_conc//self.idx_adj]
-                x = load_sparse_matrices(self.fh[data_path], idx, format='csr')
+                x = load_sparse(self.fh[data_path], idx, format='csr').T
                 if self.ribo_offset:
-                    col_names = np.array(self.fh[data_path]['col_names']).astype(str)
-                    for col_key, shift in self.ribo_paths[data_path].items():
-                        mask = col_names == col_key
+                    #col_names = np.array(self.fh[data_path]['col_names']).astype(str)
+                    for col_i, (col_key, shift) in enumerate(self.ribo_paths[data_path].items()):
+                        #mask = col_names == col_key
                         if (shift != 0) and (shift > 0):
-                            x[:shift, mask] = 0
-                            x[shift:, mask] = x[:-shift, mask]
+                            x[:shift, col_i] = 0
+                            x[shift:, col_i] = x[:-shift, col_i]
                         elif (shift != 0) and (shift < 0):
-                            x[-shift:, mask] = 0
-                            x[:-shift, mask] = x[shift:, mask]
+                            x[-shift:, col_i] = 0
+                            x[:-shift, col_i] = x[shift:, col_i]
+                    # get total number of reads per position
                     x = x.sum(axis=1)
-                    x = x/np.maximum(x.max(), 1)
-                    x_dict['ribo_single'] = self.fh['seq'][idx]
+                    # normalize
+                    x_dict['ribo'] = x/np.maximum(x.max(), 1)
                 else:
-                    x_dict['ribo_multi'] = x/np.maximum(np.sum(x, axis=1).max(), 1)
+                    # normalize
+                    x_dict['ribo'] = x/np.maximum(np.sum(x, axis=1).max(), 1)
                 
             xs.append(x_dict)
             ys.append(self.fh[self.y_path][idx])

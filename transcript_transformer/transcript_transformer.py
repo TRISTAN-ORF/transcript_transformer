@@ -52,7 +52,7 @@ class ParseArgs(object):
 
         def pretrain_train(self, mlm):
             parser = argparse.ArgumentParser(
-                       description=f'{"Pretrain TIS transformer using MLM objective" if mlm else "train TIS transformer"}',
+                       description=f'{"Pretrain transformer using MLM objective" if mlm else "train transcript transformer"}',
                        formatter_class=CustomFormatter)
             # TWO argvs, ie the command (git) and the subcommand (commit)
             parser.add_argument('input_data', type=str, metavar='dict_path',
@@ -61,7 +61,8 @@ class ParseArgs(object):
                                 help="contigs in data_path folder used for validation")
             parser.add_argument('--test', type=str, nargs='+',
                                 help="contigs in data_path folder used for testing")
-            parser.add_argument('--ribo_offset', type=boolean, default=False, help="use offset ribosome sequencing signal")
+            parser.add_argument('--ribo_offset', type=boolean, default=False,
+                                help="offset mapped ribosome reads by read length")
             parser.add_argument('--normalize_x', type=boolean, metavar='normalize_x', default=None,
                                 help="dimension of scalar embeddings")
             parser.add_argument('--name', type=str, default='',
@@ -137,6 +138,8 @@ class ParseArgs(object):
                                 help="the amount of heads used for local attention")
             tf_parse.add_argument('--local_window_size', type=int, default=256,
                                 help="window size of local attention")
+            tf_parse.add_argument('--debug', type=boolean, default=False,
+                        help="debug mode disables logging and checkpointing (only for train)")
             
             parser = pl.Trainer.add_argparse_args(parser)
             args = parser.parse_args(sys.argv[2:])
@@ -146,18 +149,22 @@ class ParseArgs(object):
                 print('Training a masked language model training with: {}'.format(args))
                 mlm_train(args)
             else:
-                print('Training a TIS transformer with: {}'.format(args))
+                print('Training a transcript transformer with: {}'.format(args))
                 train(args)
 
         def predict(self):
             parser = argparse.ArgumentParser(description='Predict TIS locations',
                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
             parser.add_argument('input_data', type=str, metavar='input_data',
-                                help='RNA sequence or path to `.fa` file')
+                                help='path to JSON dict (hdf5) or fasta file, or RNA sequence')
             parser.add_argument('input_type', type=str, metavar='input_type',
                                 help="type of input", choices=['RNA', 'fa', 'h5'])
             parser.add_argument('transfer_checkpoint', type=str, metavar='checkpoint',
                                 help="path to checkpoint of trained model")
+            parser.add_argument('--test', type=str, nargs='+',
+                                help="contigs to predict on (h5 input format only)")
+            parser.add_argument('--ribo_offset', type=boolean, default=False,
+                                help="offset mapped ribosome reads by read length")
             parser.add_argument('--output_type', type=str, default='npy', choices=['npy', 'h5'],
                                 help="file type of output predictions")
             parser.add_argument('--save_path', type=str, metavar='save_path', default='results',
@@ -179,7 +186,7 @@ class ParseArgs(object):
             predict(args)
 
 def parse_json(args):
-    with open(args.data_path, 'r') as fh:
+    with open(args.input_data, 'r') as fh:
         input_data = json.load(fh)
         args.h5_path = input_data['h5_path']
         args.exp_path = input_data['exp_path']
@@ -252,9 +259,12 @@ def train(args):
     checkpoint_callback = ModelCheckpoint(monitor="val_loss", 
                                           filename="{epoch:02d}_{val_loss:.2f}", save_top_k=1, mode="min")
     tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join(args.log_dir, args.name))
-    trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1,
-                                            callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=10)],
-                                            logger=tb_logger)
+    if args.debug:
+        trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1, enable_checkpointing=False, logger=False)
+    else:
+        trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1,
+                                                callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=10)],
+                                                logger=tb_logger)
     trainer.fit(trans_model, datamodule=tr_loader)
     trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
 
@@ -264,18 +274,18 @@ def predict(args):
     trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint)
     trans_model.to(device)
     trans_model.eval()
+    out = {}
 
     if args.input_type == 'h5':
         args = parse_json(args)
         tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo_path, args.y_path, args.x_seq, args.ribo_offset, 
-                                args.id_path, args.contig_path, val=args.val, test=args.test, 
-                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, 
-                                num_workers=args.num_workers, cond_fs=args.cond, leaky_frac=args.leaky_frac, collate_fn=collate_fn)
+                                args.id_path, args.contig_path, test=args.test, max_transcripts_per_batch=args.max_transcripts_per_batch,
+                                min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, num_workers=args.num_workers, collate_fn=collate_fn)
         trainer = pl.Trainer(accelerator='gpu' if args.gpus else 'cpu', devices=1,  logger=False, enable_checkpointing=False)
-        trainer.test(trans_model, dataloaders=tr_loader.test_dataloader())
-        
-        outputs = np.array([t.detach().cpu().numpy() for t in trans_model.test_outputs], dtype=object)
-        tr_ids = np.array(trans_model.labels)
+        trainer.test(trans_model, dataloaders=tr_loader)
+        out['id'] = np.array(trans_model.labels)
+        out['pred'] = np.array([t.detach().cpu().numpy() for t in trans_model.test_outputs], dtype=object)
+        out['target'] = np.array([t.detach().cpu().numpy() for t in trans_model.test_targets], dtype=object)
     else:
         if args.input_type == 'fa':
             file = open(args.input_data)
@@ -283,7 +293,7 @@ def predict(args):
             file.close()
             tr_ids = data[0::2]
             tr_seqs = data[1::2]
-            tr_ids = np.array([seq.replace('\n','') for seq in tr_ids])
+            out['id'] = np.array([seq.replace('\n','') for seq in tr_ids])
             tr_seqs = [seq.replace('\n','').upper() for seq in tr_seqs]
             x_data = [DNA2vec(seq) for seq in tr_seqs if (len(seq) < args.max_seq_len) and (len(seq) > args.min_seq_len)]
             
@@ -291,7 +301,7 @@ def predict(args):
             assert len(args.input_data) < args.max_seq_len, f'input is longer than maximum input length: {args.max_seq_len}'
             assert len(args.input_data) > args.min_seq_len, f'input is smaller than minimum input length: {args.min_seq_len}'
             x_data = [DNA2vec(args.input_data.upper())]
-            tr_ids = np.array(['seq_1'])
+            out['id'] = np.array(['seq_1'])
         
         print('\nProcessing data')
         outputs = []
@@ -299,16 +309,19 @@ def predict(args):
             print('\r{:.2f}%'.format(i/len(x_data)*100), end='')
             out = F.softmax(trans_model.forward(*prep_input(x, device)), dim=1)[:,1]
             outputs.append(out.detach().cpu().numpy())
-        outputs = np.array(outputs, dtype=object)
+        out['pred'] = np.array(outputs, dtype=object)
     
     if args.output_type == 'npy':
-        np.save(args.save_path, np.array([tr_ids, outputs], dtype=object).T)
+        np.save(args.save_path, np.array(list(out.values()), dtype=object).T)
     else:
         out_h = h5py.File(f'{args.save_path}', mode='w')
         grp = out_h.create_group('outputs')
-        grp.create_dataset('id', data=tr_ids.astype('S'),)
-        dtype = h5py.vlen_dtype(np.dtype('float16')) if len(outputs) > 1 else np.float16
-        grp.create_dataset('output', data=outputs, dtype=dtype)
+        grp.create_dataset('id', data=out['id'].astype('S'),)
+        dtype = h5py.vlen_dtype(np.dtype('float16')) if len(out['pred']) > 1 else np.float16
+        grp.create_dataset('pred', data=out['pred'], dtype=dtype)
+        if 'target' in out.keys():
+            dtype = h5py.vlen_dtype(np.dtype('bool')) if len(out['pred']) > 1 else 'bool'
+            grp.create_dataset('target', data=out['target'], dtype=dtype)
         out_h.close()
     print(f'\nResults saved to `{args.save_path}')
 
