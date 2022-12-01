@@ -10,9 +10,9 @@ Deep learning utility functions for processing and annotating transcript genome 
 </div>
 
 
-`transcript_transformer`  is constructed in concordance with the creation of TIS Transformer, ([paper](https://www.biorxiv.org/content/10.1101/2021.11.18.468957v1), [repository](https://github.com/jdcla/TIS_transformer)) and Riboformer (to be released). `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes use of `h5py` for data loading and `pytorch-lightning` as a high-level interface for training and evaluation for deep learning models. `transcript_transformer` is designed to allow a high degree of modularity, but has not been tested for every combination of arguments, and can therefore return errors.
+`transcript_transformer`  is constructed in concordance with the creation of TIS Transformer, ([paper](https://www.biorxiv.org/content/10.1101/2021.11.18.468957v2), [repository](https://github.com/jdcla/TIS_transformer)) and RIBO-former (to be released). `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes use of `h5py` for data loading and `pytorch-lightning` as a high-level interface for training and evaluation for deep learning models. `transcript_transformer` is designed to allow a high degree of modularity, but has not been tested for every combination of arguments, and can therefore return errors.
 
-## Installation
+## 🔗 Installation
 `pytorch` needs to be separately [installed by the user](https://pytorch.org/get-started/locally/). 
 
 Next, the package can be installed running 
@@ -20,7 +20,7 @@ Next, the package can be installed running
 pip install transcript-transformer
 ```
 
-## Usage <a name="code"></a>
+## 📖 User guide <a name="code"></a>
 
 The library features a tool that can be called directly by the command `transcript_transformer`, featuring three main functions: `pretrain`, `train` and `predict`. Data loading is achieved using the `h5` format, handled by the `h5py` package.
 
@@ -163,7 +163,25 @@ transcript_transformer predict AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGGT RNA --output
 transcript_transformer predict data/example_data.fa fa --output_type npy models/example_model.ckpt
 ```
 
+### Output data
 
+The model returns predictions for every nucleotide on the transcripts. For each transcript, the array lists the transcript label and model outputs. The tool can output predictions using both the `npy` or `h5` format. 
+
+```python
+>>> results = np.load('results.npy', allow_pickle=True)
+>>> results[0]
+array(['>ENST00000410304',
+       array([2.3891837e-09, 7.0824785e-07, 8.3791534e-09, 4.3269135e-09,
+              4.9220684e-08, 1.5315813e-10, 7.0196869e-08, 2.4103475e-10,
+              4.5873511e-10, 1.4299616e-10, 6.1071654e-09, 1.9664975e-08,
+              2.9255699e-07, 4.7719610e-08, 7.7600065e-10, 9.2305236e-10,
+              3.3297397e-07, 3.5771163e-07, 4.1942007e-05, 4.5123262e-08,
+              1.0270607e-11, 1.1841109e-09, 7.9038587e-10, 6.5511790e-10,
+              6.0892291e-13, 1.6157842e-11, 6.9130129e-10, 4.5778301e-11,
+              2.1682500e-03, 2.3315516e-09, 2.2578116e-11], dtype=float32)],
+      dtype=object)
+
+```
 
 ### Other function flags
 Various other function flags dictate the properties of the dataloader, model architecture and training procedure.
@@ -374,47 +392,8 @@ pl.Trainer:
 
 </details>
 
-## Output data
 
-The model returns predictions for every nucleotide on the transcripts. For each transcript, the array lists the transcript label and model outputs. The tool outputs predictions either as using the `npy` or `h5` format. 
-
-<details>
-
-```python
->>> results = np.load('results.npy', allow_pickle=True)
->>> results[0]
-array(['>ENST00000410304',
-       array([2.3891837e-09, 7.0824785e-07, 8.3791534e-09, 4.3269135e-09,
-              4.9220684e-08, 1.5315813e-10, 7.0196869e-08, 2.4103475e-10,
-              4.5873511e-10, 1.4299616e-10, 6.1071654e-09, 1.9664975e-08,
-              2.9255699e-07, 4.7719610e-08, 7.7600065e-10, 9.2305236e-10,
-              3.3297397e-07, 3.5771163e-07, 4.1942007e-05, 4.5123262e-08,
-              1.2450059e-09, 9.2165324e-11, 3.6457399e-09, 8.8559119e-08,
-              9.2133210e-05, 1.7473910e-09, 4.0608841e-09, 2.9064828e-12,
-              1.9478179e-08, 9.0584736e-12, 1.7068935e-05, 2.8910944e-07,
-              3.5740332e-08, 3.3406838e-10, 5.7711222e-08, 5.0289093e-09,
-              7.4243858e-12, 2.2184177e-09, 5.2881451e-06, 6.1195571e-10,
-              1.4648888e-10, 1.4948037e-07, 2.3879443e-07, 1.6367457e-08,
-              1.9375465e-08, 3.3595885e-08, 4.1618881e-10, 6.3614699e-12,
-              4.1953702e-10, 1.3611480e-08, 2.0185058e-09, 8.1397658e-08,
-              2.3339116e-07, 4.8850779e-08, 1.6549968e-12, 1.2499275e-11,
-              8.3455109e-10, 1.5468280e-12, 3.5863316e-08, 1.2135585e-09,
-              4.4234839e-14, 2.0041482e-11, 4.0546926e-09, 4.8796110e-12,
-              3.4575018e-13, 5.0659910e-10, 3.2857072e-13, 2.3365734e-09,
-              8.3198276e-10, 2.9397595e-10, 3.3731489e-08, 9.1637538e-11,
-              1.0781720e-09, 1.0790679e-11, 4.8457072e-10, 4.6192927e-10,
-              4.9371015e-12, 2.8158498e-13, 2.9590792e-09, 4.3507330e-07,
-              5.7654831e-10, 2.4951474e-09, 4.6289192e-12, 1.5421598e-02,
-              1.0270607e-11, 1.1841109e-09, 7.9038587e-10, 6.5511790e-10,
-              6.0892291e-13, 1.6157842e-11, 6.9130129e-10, 4.5778301e-11,
-              2.1682500e-03, 2.3315516e-09, 2.2578116e-11], dtype=float32)],
-      dtype=object)
-
-```
-
-</details>
-
-## Package features
+## ✔️ Package features
 
 - [ ] creation of `h5` file from genome assemblies and ribosome profiling datasets
 - [x] bucket sampling
@@ -426,7 +405,7 @@ array(['>ENST00000410304',
 - [x] application of trained networks
 - [ ] test scripts
 
-## Citation <a name="citation"></a>
+## 🖊️ Citation <a name="citation"></a>
        
 ```latex
 @article {Clauwaert2021.11.18.468957,
