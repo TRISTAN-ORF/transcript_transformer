@@ -1,15 +1,16 @@
 <div align="center">
 <h1>transcript_transformer</h1> 
 
+Deep learning utility functions for processing and annotating transcript genome data.
+
 [![PyPi Version](https://img.shields.io/pypi/v/transcript-transformer.svg)](https://pypi.python.org/pypi/transcript-transformer/)
 [![GitHub license](https://img.shields.io/github/license/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/blob/main/LICENSE.md)
 [![GitHub issues](https://img.shields.io/github/issues/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/issues)
 [![GitHub stars](https://img.shields.io/github/stars/jdcla/transcript_transformer)](https://github.com/jdcla/transcript_transformer/stargazers)
 </div>
 
-Deep learning utility functions for processing and annotating transcript genome data.
 
-`transcript_transformer`  is constructed in concordance with the creation of the [TIS Transformer](https://www.biorxiv.org/content/10.1101/2021.11.18.468957v1) and Riboformer (to be released) studies. While some degree of modularity was incorporated in the design of `transcript_transformer`, it is not the main aim of the package. `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes use of the `hdf5` format for data loading and `pytorch-lightning` as a high-level interface for training and evaluation for deep learning models. Applying a custom bucketsampler, training times have been optimized. 
+`transcript_transformer`  is constructed in concordance with the creation of TIS Transformer, ([paper](https://www.biorxiv.org/content/10.1101/2021.11.18.468957v1), [repository](https://github.com/jdcla/TIS_transformer)) and Riboformer (to be released). `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes use of `h5py` for data loading and `pytorch-lightning` as a high-level interface for training and evaluation for deep learning models. `transcript_transformer` is designed to allow a high degree of modularity, but has not been tested for every combination of arguments, and can therefore return errors.
 
 ## Installation
 `pytorch` needs to be separately [installed by the user](https://pytorch.org/get-started/locally/). 
@@ -21,14 +22,16 @@ pip install transcript-transformer
 
 ## Usage <a name="code"></a>
 
-### Input data
-The input data is expected to be loaded from the `h5py/h5` format. Information is separated by transcript and information type. Information belonging to a single transcript is mapped according to the index they populate within each `h5py.dataset`, used to store different types of information. [Variable length arrays](https://docs.h5py.org/en/stable/special.html#arbitrary-vlen-data) are used to store the sequences and annotations of all transcripts under a single data set. 
+The library features a tool that can be called directly by the command `transcript_transformer`, featuring three main functions: `pretrain`, `train` and `predict`. Data loading is achieved using the `h5` format, handled by the `h5py` package.
+
+### Data loading
+ Information is separated by transcript and information type. Information belonging to a single transcript is mapped according to the index they populate within each `h5py.dataset`, used to store different types of information. [Variable length arrays](https://docs.h5py.org/en/stable/special.html#arbitrary-vlen-data) are used to store the sequences and annotations of all transcripts under a single data set. 
 Sequences are stored using integer arrays following: `{A:0, T:1, C:2, G:3, N:4}`
-A possible `data.h5` has the following structure:
+An example `data.h5` has the following structure:
 
 
 ```
-data.h5                              (h5py.file)
+data.h5                                     (h5py.file)
     transcript                              (h5py.group)
     ├── tis                                 (h5py.dataset, dtype=vlen(int))
     ├── contig                              (h5py.dataset, dtype=str)
@@ -46,21 +49,13 @@ data.h5                              (h5py.file)
     
 ```
 
-<div align="center">
-<img src="https://github.com/jdcla/transcript_transformer/raw/main/h5data.png" width="600">
-</div>
-
-
-Ribosome profiling data is saved by reads mapped to each transcript. Mapped reads are furthermore separated by their read length. As ribosome profiling data is often sparse, we made use of `scipy.sparse` to save data within the `h5` format. This allows us to save space and store matrix objects as separate arrays. Saving and loading of the data is achieved using the [h5max](https://github.com/jdcla/h5max) functions
+Ribosome profiling data is saved by reads mapped to each transcript position. Mapped reads are furthermore separated by their read lengths. As ribosome profiling data is often sparse, we made use of `scipy.sparse` to save data within the `h5` format. This allows us to save space and store matrix objects as separate arrays. Saving and loading of the data is achieved using the [h5max](https://github.com/jdcla/h5max) package.
 
 <div align="center">
 <img src="https://github.com/jdcla/h5max/raw/main/h5max.png" width="600">
 </div>
 
-
-
-### Data loading
-A supporting `.json` file is used to specify the varying paths in which the data is stored. When no sequence information or ribosome profiling data is used, either entry `seq_path` or `ribo_path` can be set to `false`. For each ribosome profiling dataset, custom [P-site offsets](https://plastid.readthedocs.io/en/latest/glossary.html#term-P-site-offset) can be set per read length. 
+Dictionary `.json` files are used to specify the application of data to `transcript_transformer`. When no sequence information or ribosome profiling data is used, either entry `seq` or `ribo` is set to `false`. For each ribosome profiling dataset, custom [P-site offsets](https://plastid.readthedocs.io/en/latest/glossary.html#term-P-site-offset) can be set per read length. 
 
 ```json
 {
@@ -70,8 +65,8 @@ A supporting `.json` file is used to specify the varying paths in which the data
   "chrom_path":"contig",
   "id_path":"id",
   "seq":"seq",
-  "ribo":{
-    SRR000001/5: {
+  "ribo": {
+    "SRR000001/5": {
       "25": 7,
       "26": 7,
       "27": 8,
@@ -89,12 +84,12 @@ A supporting `.json` file is used to specify the varying paths in which the data
 ```
 
 
+
 ### pretrain
-The library features a tool that can be called directly by the command `transcript_transformer`, featuring three main functions: `pretrain`, `train` and `predict`.
 
-Conform with transformers trained for natural language processing objectives, a model can first be trained using self-supervised learning. Using a masked language modelling approach, the model is tasked to predict the classes of the masked input nucleotides. As such, a model is trained the 'semantics' of transcript sequences. The approach is similar to the one described by [Zaheer et al. ](https://arxiv.org/abs/2007.14062).
 
-<details><summary>pretrain arguments</summary>
+Conform with transformers trained for natural language processing objectives, models can first be trained following a self-supervised learning objective. Using a masked language modelling approach, models are tasked to predict the classes of the masked input tokens. As such, a model is trained the 'semantics' of transcript sequences. The approach is similar to the one described by [Zaheer et al. ](https://arxiv.org/abs/2007.14062). This approach has not been using ribosome profiling data.
+
 
 ```
 transcript_transformer pretrain -h
@@ -105,82 +100,90 @@ positional arguments:
     test                  list of chromosomes used for the test set
   --mask_frac float       fraction of input positions that are masked (default: 0.85)
   --rand_frac float       fraction of masked inputs that are randomized (default: 0.1)
+```
 
-# Example
-    
-TransscriptFormer pretrain input_data.json --val 1 13 --test 2 14 --max_epochs 70 --gpu 1 
+Example
+
+```
+transcript_transformer pretrain input_data.json --val 1 13 --test 2 14 --max_epochs 70 --gpu 1 
 ```
 
 </details>
 
 ### train
-Training the model using on a binary classification objective. The input data is processed as one. A label is assigned to every input position. Using the processed data a model can be trained to detect TISs. 
+The package supports training the models architectures listed under `transcript_transformer/models.py`. The function expects a `.json` file containing the input data info (see [data loading](https://github.com/jdcla/transcript_transformer#data-loading)). It is possible to start training upon pre-trained models using the `--transfer_checkpoint` functionality.
 
-<details><summary>train arguments</summary>
 
 ```
 transcript_transformer train -h
     
 positional arguments:
-    input_data            path to json file specifying input data (see README.md)
-    val                   list of chromosomes used for the validation set
-    test                  list of chromosomes used for the test set
+  dict_path               dictionary (json) path containing input data file info
+
+options:
+  --val                   contigs in data_path folder used for validation (default: None)
+  --test                  contigs in data_path folder used for testing (default: None)
+  --ribo_offset           offset mapped ribosome reads by read length (default: False)
+  --name                  name of the model (default: )
+  --log_dir               log dir (default: lightning_logs)
   --transfer_checkpoint   Path to checkpoint pretrained model (default: None)
-    
-# Example
-    
-transcript_transformer train input_data.json --val 1 13 --test 2 14 --max_epochs 70 --transfer_checkpoint lightning_logs/mlm_model/version_0/ --name experiment_1 --gpu 1 
+```
+
+Example
 
 ```
-    
-</details>
+transcript_transformer train input_data.json --val 1 13 --test 2 14 --max_epochs 70 --transfer_checkpoint lightning_logs/mlm_model/version_0/ --name experiment_1 --gpu 1 
+```
 
 ### predict
 
-The predict function is used to obtain the predicted positions of TIS sites on a transcript. These predictions return probabilities for all nucleotide positions on the transcript, and are saved as numpy arrays. The code can handle the RNA sequence as input, or a list of transcripts given in a `.fa` or `.npy` format. Note that `.fa` and `.npy` formats are only supported for models trained on solely the transcript nucleotide sequence.
+The predict function returns probabilities for all nucleotide positions on the transcript and can be saved using the `.npy` or `.h5` format. In addition to reading from `.h5` files, the function supports the use of a single RNA sequence as input or a path to a `.fa` file. Note that `.fa` and `.npy` formats are only supported for models that only apply transcript nucleotide information.
 
-<details><summary>predict arguments</summary>
-
-```bash
+```
 transcript_transformer predict -h
 
 positional arguments:
-  input_data              RNA sequence or path to a `.fa` or `.h5` file
-  input_type              Type of input, either one of ['RNA', 'npy', 'h5']
-  checkpoint              path to checkpoint of trained model
+  input_data            path to JSON dict (h5) or fasta file, or RNA sequence
+  input_type            type of input
+  checkpoint            path to checkpoint of trained model
 
 options:
-  -h, --help              show this help message and exit
-  --output_type {npy,h5}  file type of output predictions (default: npy)
-  --save_path save_path   save file path (default: results)
+  -h, --help            show this help message and exit
+  --test                contigs to predict on (h5 input format only) (default: None)
+  --ribo_offset         offset mapped ribosome reads by read length (default: False)
+  --output_type         file type of output predictions (default: npy)
+  --save_path           save file path (default: results)
+```
 
-# Example
 
+Example
+
+```
 transcript_transformer predict AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGGT RNA --output_type npy models/example_model.ckpt
 transcript_transformer predict data/example_data.fa fa --output_type npy models/example_model.ckpt
-    
 ```
 
-</details>
+
 
 ### Other function flags
+Various other function flags dictate the properties of the dataloader, model architecture and training procedure.
 
-Other flags determine the architecture of the model or tweaking the training process
+<details><summary>Dataloader</summary>
 
-<details><summary>Dataloader flags</summary>
-
-```bash
+```
 data loader arguments
 
-  --max_seq_len int     maximum sequence length of transcripts (default: 25000)
+  --min_seq_len int     minimum sequence length of transcripts (default: 0)
+  --max_seq_len int     maximum sequence length of transcripts (default: 30000)
+  --leaky_frac float    fraction of samples that escape conditions (default: 0.05)
   --num_workers int     number of data loader workers (default: 12)
   --max_transcripts_per_batch int
-                        maximum amount of transcripts per batch (default: 400)
+                        maximum of transcripts per batch (default: 400)
 ```
 
 </details>
 
-<details><summary>Model architecture flags</summary>
+<details><summary>Model architecture</summary>
 
 ```
 Model:
@@ -220,7 +223,7 @@ Model:
 
 </details>
 
-<details><summary>Pytorch lightning trainer flags</summary>
+<details><summary>Pytorch lightning trainer</summary>
 
 ```
 pl.Trainer:
@@ -410,6 +413,18 @@ array(['>ENST00000410304',
 ```
 
 </details>
+
+## Package features
+
+- [ ] creation of `h5` file from genome assemblies and ribosome profiling datasets
+- [x] bucket sampling
+- [x] pre-training functionality
+- [x] data loading for sequence and ribosome data
+- [x] custom target labels
+- [ ] function hooks for custom data loading and pre-processing
+- [x] model architectures
+- [x] application of trained networks
+- [ ] test scripts
 
 ## Citation <a name="citation"></a>
        
