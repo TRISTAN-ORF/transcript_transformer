@@ -119,9 +119,9 @@ class h5pyDataModule(pl.LightningDataModule):
         self.h5py_path = h5py_path
         self.exp_path = exp_path
         self.contig_path = contig_path
-        self.train_contigs = np.ravel([train])
-        self.val_contigs = np.ravel([val])
-        self.test_contigs = np.ravel([test])
+        self.train_contigs = np.ravel([train]) if train else []
+        self.val_contigs = np.ravel([val]) if val else []
+        self.test_contigs = np.ravel([test]) if test else []
         self.max_memory = max_memory
         self.max_transcripts_per_batch = max_transcripts_per_batch
         self.max_seq_len = max_seq_len
