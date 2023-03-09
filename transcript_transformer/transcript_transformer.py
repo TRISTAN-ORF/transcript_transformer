@@ -56,17 +56,18 @@ class ParseArgs(object):
                        formatter_class=CustomFormatter)
             # TWO argvs, ie the command (git) and the subcommand (commit)
             parser.add_argument('input_data', type=str, metavar='dict_path',
-                                help="dictionary (json) path containing input data file structure")
+                                help="dictionary (json) path containing input data file info")
+            parser.add_argument('--train', type=str, nargs='+',
+                                help="contigs in data_path folder used for training. If not specified, "\
+                                    "training is performed on all available contigs excluding val/test contigs")
             parser.add_argument('--val', type=str, nargs='+',
                                 help="contigs in data_path folder used for validation")
             parser.add_argument('--test', type=str, nargs='+',
                                 help="contigs in data_path folder used for testing")
             parser.add_argument('--ribo_offset', type=boolean, default=False,
                                 help="offset mapped ribosome reads by read length")
-            parser.add_argument('--normalize_x', type=boolean, metavar='normalize_x', default=None,
-                                help="dimension of scalar embeddings")
             parser.add_argument('--name', type=str, default='',
-                               help="name of the experiment")
+                               help="name of the model")
             parser.add_argument('--log_dir', type=str, default='lightning_logs',
                                help="log dir")
 
@@ -79,7 +80,9 @@ class ParseArgs(object):
                                 help="fraction of samples that escape conditions (ribo-seq)")
             dl_parse.add_argument('--num_workers', type=int, default=12, 
                                 help="number of data loader workers")
-            dl_parse.add_argument('--max_transcripts_per_batch', type=int, default=400, 
+            dl_parse.add_argument('--max_memory', type=int, default=24000, 
+                                help="MB value applied for bucket batches based on rough estimates")         
+            dl_parse.add_argument('--max_transcripts_per_batch', type=int, default=2000, 
                                 help="maximum of transcripts per batch")
             
             tf_parse = parser.add_argument_group('Model', f'Transformer arguments {"for MLM objective" if mlm else ""}')
@@ -99,8 +102,8 @@ class ParseArgs(object):
                                 help="multiplicatively decays learning rate for every epoch")
             tf_parse.add_argument('--warmup_steps', type=int, default=1500,
                                   help="number of warmup steps at the start of training")
-            tf_parse.add_argument('--num_tokens', type=int, default=8, 
-                                help="number of unique input tokens")      
+            tf_parse.add_argument('--num_tokens', type=int, default=5, 
+                                help="number of unique nucleotide input tokens")      
             tf_parse.add_argument('--dim', type=int, default=30,
                                 help="dimension of the hidden states")
             tf_parse.add_argument('--depth', type=int, default=6, 
@@ -110,7 +113,7 @@ class ParseArgs(object):
             tf_parse.add_argument('--dim_head', type=int, default=16,
                                 help="dimension of the attention head matrices")
             tf_parse.add_argument('--nb_features', type=int, default=80, 
-                                help="number of random features, if not set, will default to (d * log(d)),"\
+                                help="number of random features, if not set, will default to (d * log(d)), "\
                                 "where d is the dimension of each head") 
             tf_parse.add_argument('--feature_redraw_interval', type=int, default=1000, 
                                 help="how frequently to redraw the projection matrix")      
@@ -139,11 +142,12 @@ class ParseArgs(object):
             tf_parse.add_argument('--local_window_size', type=int, default=256,
                                 help="window size of local attention")
             tf_parse.add_argument('--debug', type=boolean, default=False,
-                        help="debug mode disables logging and checkpointing (only for train)")
+                                  help="debug mode disables logging and checkpointing (only for train)")
             
             parser = pl.Trainer.add_argparse_args(parser)
             args = parser.parse_args(sys.argv[2:])
             args = parse_json(args)
+            args.num_tokens += 3 # add tokens used for data loading/padding
 
             if mlm:
                 print('Training a masked language model training with: {}'.format(args))
@@ -156,9 +160,9 @@ class ParseArgs(object):
             parser = argparse.ArgumentParser(description='Predict TIS locations',
                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
             parser.add_argument('input_data', type=str, metavar='input_data',
-                                help='path to JSON dict (hdf5) or fasta file, or RNA sequence')
+                                help='path to JSON dict (h5) or fasta file, or RNA sequence')
             parser.add_argument('input_type', type=str, metavar='input_type',
-                                help="type of input", choices=['RNA', 'fa', 'h5'])
+                                help="type of input", choices=['h5', 'fa', 'RNA'])
             parser.add_argument('transfer_checkpoint', type=str, metavar='checkpoint',
                                 help="path to checkpoint of trained model")
             parser.add_argument('--test', type=str, nargs='+',
@@ -229,21 +233,22 @@ def mlm_train(args):
                         args.use_rezero, False, args.ff_glu, args.emb_dropout, args.ff_dropout,
                         args.attn_dropout, args.local_attn_heads, args.local_window_size)
     tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo_path, args.y_path, args.x_seq, args.ribo_offset, 
-                               args.id_path, args.contig_path,  args.val, args.test, 
+                               args.id_path, args.contig_path, args.train, args.val, args.test, args.max_memory,
                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, 
                                max_seq_len=args.max_seq_len, num_workers=args.num_workers, cond_fs=args.cond, collate_fn=collate_fn)
     checkpoint_callback = ModelCheckpoint(monitor="val_loss", dirpath=os.path.join(args.log_dir, args.name), 
                                           filename="{epoch:02d}_{val_loss:.2f}", save_top_k=1, mode="min")
     tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join(args.log_dir, args.name))
     trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1, 
-                                            callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=10)],
+                                            callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=8)],
                                             logger=tb_logger)
     trainer.fit(mlm, datamodule=tr_loader)
     trainer.test(mlm, datamodule=tr_loader, ckpt_path='best')
 
 def train(args):
     if args.transfer_checkpoint:
-        trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, x_seq=args.x_seq, x_ribo=args.x_ribo, lr=args.lr, decay_rate=args.decay_rate, warmup_step=args.warmup_steps, max_seq_len=args.max_seq_len)
+        trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, x_seq=args.x_seq, x_ribo=args.x_ribo,
+                                                                lr=args.lr, decay_rate=args.decay_rate, warmup_step=args.warmup_steps, max_seq_len=args.max_seq_len)
     else:
         trans_model = TranscriptSeqRiboEmb(args.x_seq, args.x_ribo, args.num_tokens, args.lr, args.decay_rate, args.warmup_steps,
                 args.max_seq_len, args.dim, args.depth, args.heads, args.dim_head, False, args.nb_features, 
@@ -251,9 +256,9 @@ def train(args):
                 args.reversible, args.ff_chunks, args.use_scalenorm, args.use_rezero, False,
                 args.ff_glu, args.emb_dropout, args.ff_dropout, args.attn_dropout,
                 args.local_attn_heads, args.local_window_size)
-    # TODO normalize is ignored for now
+        
     tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo_path, args.y_path, args.x_seq, args.ribo_offset, 
-                               args.id_path, args.contig_path, val=args.val, test=args.test, 
+                               args.id_path, args.contig_path, train=args.train, val=args.val, test=args.test, max_memory=args.max_memory,
                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, 
                                num_workers=args.num_workers, cond_fs=args.cond, leaky_frac=args.leaky_frac, collate_fn=collate_fn)
     checkpoint_callback = ModelCheckpoint(monitor="val_loss", 
@@ -263,7 +268,7 @@ def train(args):
         trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1, enable_checkpointing=False, logger=False)
     else:
         trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1,
-                                                callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=10)],
+                                                callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=8)],
                                                 logger=tb_logger)
     trainer.fit(trans_model, datamodule=tr_loader)
     trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
@@ -279,7 +284,7 @@ def predict(args):
     if args.input_type == 'h5':
         args = parse_json(args)
         tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo_path, args.y_path, args.x_seq, args.ribo_offset, 
-                                args.id_path, args.contig_path, test=args.test, max_transcripts_per_batch=args.max_transcripts_per_batch,
+                                args.id_path, args.contig_path, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
                                 min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, num_workers=args.num_workers, collate_fn=collate_fn)
         trainer = pl.Trainer(accelerator='gpu' if args.gpus else 'cpu', devices=1,  logger=False, enable_checkpointing=False)
         trainer.test(trans_model, dataloaders=tr_loader)

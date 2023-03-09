@@ -6,6 +6,7 @@ from h5max import load_sparse
 from torch.nn.functional import pad
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+from pdb import set_trace
 
 def collate_fn(batch):
     """
@@ -68,44 +69,49 @@ def local_shuffle(data, lens=None):
 
     return data, lens
 
-def bucket(data, lens, max_seq_len, max_transcripts_per_batch, min_seq_len=0):
+def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
     # split idx sites l
     l = []
     # idx pos
     num_samples = 0
-    # filter invalid lens
-    mask = np.logical_and(np.array(lens)<=max_seq_len, np.array(lens)>=min_seq_len)
-    data = data[mask]
-    lens = lens[mask]
-    ### bucket batching
     while len(data) > num_samples:
         # get lens of leftover transcripts
-        lens_set = lens[num_samples:]
+        lens_set = lens[num_samples:num_samples+max_transcripts_per_batch]
         # calculate memory based on number and length of samples (+2 for transcript start/stop token)
-        mask = (np.maximum.accumulate(lens_set)+2) * (np.arange(len(lens_set))+1) >= max_seq_len
+        #num_samples_adj = np.multiply.accumulate(np.full(len(lens_set), 1.001))
+        num_samples_adj = np.multiply.accumulate(np.full(len(lens_set), 1.02))
+        if dataset in ['train']:
+            mask = (np.maximum.accumulate(lens_set+200)) * (np.arange(len(lens_set))+1) * num_samples_adj < max_memory
+        else:
+            mask = (np.maximum.accumulate(lens_set+200)) * (np.arange(len(lens_set))+1) * num_samples_adj * 0.75 < max_memory
         # obtain position where mem > max_memory
-        mask_idx = np.where(mask)[0]
         # get idx to split
-        if len(mask_idx) > 0 and (mask_idx[0] > 0):
-            # max amount of transcripts per batch
-            samples_d = min(mask_idx[0],max_transcripts_per_batch)
+        if sum(mask) > 0:
+            samples_d = sum(mask)
             num_samples += samples_d
             l.append(num_samples)       
         else:
-            break
-    # [:-1] not possible when trying to test all data
-    return np.split(data, l)#[:-1]
+            print(f"{len(data)-num_samples} ({(1-num_samples/len(data))*100:.2f}%) samples removed from {dataset} set because of memory constraints, "
+                "adjust max_memory to address behavior")
+            data = data[:num_samples]
+            lens = lens[:num_samples]
+
+    assert len(data) > 0, f"No data samples left in {dataset} set"
+    # always true?
+    if l[-1] == len(data):
+        l = l[:-1]
+    return np.split(data, l)
 
 class h5pyDataModule(pl.LightningDataModule):
     def __init__(self, h5py_path, exp_path, ribo_paths, y_path, x_seq=False, ribo_offset=False, id_path='id', contig_path='contig', 
-                 val=[], test=[], max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5, 
+                 train=[], val=[], test=[], max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5, 
                  cond_fs=None, leaky_frac=0.05, collate_fn=collate_fn):
         super().__init__()
         self.ribo_paths = ribo_paths
         self.ribo_offset = ribo_offset
         if ribo_offset:
             assert len(list(ribo_paths.values())) > 0, f"No offset values present in ribo_paths input, check the function docstring"
-        # number of datasets
+        # support for training on multiple datasets
         self.n_data = max(len(self.ribo_paths), 1)
         self.x_seq = x_seq
         self.y_path = y_path
@@ -113,8 +119,10 @@ class h5pyDataModule(pl.LightningDataModule):
         self.h5py_path = h5py_path
         self.exp_path = exp_path
         self.contig_path = contig_path
+        self.train_contigs = np.ravel([train])
         self.val_contigs = np.ravel([val])
         self.test_contigs = np.ravel([test])
+        self.max_memory = max_memory
         self.max_transcripts_per_batch = max_transcripts_per_batch
         self.max_seq_len = max_seq_len
         self.min_seq_len = min_seq_len
@@ -125,7 +133,10 @@ class h5pyDataModule(pl.LightningDataModule):
 
     def setup(self, stage=None):
         self.fh = h5py.File(self.h5py_path,'r')[self.exp_path]
-        self.cond_mask = np.full(len(self.fh[self.id_path]), True)
+        # filter data
+        tr_lens = np.array(self.fh['tr_len'])
+        self.seq_len_mask = np.logical_and(tr_lens < self.max_seq_len, tr_lens > self.min_seq_len)
+        self.cond_mask = np.full_like(self.seq_len_mask, True)
         
         if self.cond_fs is not None:
             for key, cond in self.cond_fs.items():
@@ -135,27 +146,29 @@ class h5pyDataModule(pl.LightningDataModule):
                 leaky_idxs = np.random.choice(np.where(~self.cond_mask)[0], leaky_abs)
                 self.cond_mask[leaky_idxs] = True
         
-        contigs = np.unique(self.fh[self.contig_path]).astype(str)
-        for ct in self.val_contigs:
-            contigs = np.delete(contigs, np.where(contigs == str(ct)))
-        for ct in self.test_contigs:
-            contigs = np.delete(contigs, np.where(contigs == str(ct)))
-        self.train_contigs = contigs
+        if len(self.train_contigs) == 0:
+            contigs = np.unique(self.fh[self.contig_path]).astype(str)
+            for ct in self.val_contigs:
+                contigs = np.delete(contigs, np.where(contigs == str(ct)))
+            for ct in self.test_contigs:
+                contigs = np.delete(contigs, np.where(contigs == str(ct)))
+            self.train_contigs = contigs
+            
         print(f"Training contigs: {self.train_contigs}")
         print(f"Validation contigs: {self.val_contigs}")
         print(f"Test contigs: {self.test_contigs}")
         
         if stage == "fit" or stage is None:
             contig_mask = np.isin(self.fh[self.contig_path], np.array(self.train_contigs).astype('S'))
-            mask = np.logical_and(self.cond_mask, contig_mask)
+            mask = np.logical_and.reduce([self.cond_mask, contig_mask, self.seq_len_mask])
             self.tr_idx, self.tr_len, self.tr_idx_adj = self.prepare_sets(mask)
             print(f"Training set transcripts: {len(self.tr_idx)}")
             mask = np.isin(self.fh[self.contig_path], self.val_contigs.astype('S'))
-            self.val_idx, self.val_len, self.val_idx_adj = self.prepare_sets(mask)
+            self.val_idx, self.val_len, self.val_idx_adj = self.prepare_sets(np.logical_and(mask, self.seq_len_mask))
             print(f"Validation set transcripts: {len(self.val_idx)}")
         if stage == "test" or stage is None:
             mask = np.isin(self.fh[self.contig_path], self.test_contigs.astype('S'))
-            self.te_idx, self.te_len, self.te_idx_adj = self.prepare_sets(mask)
+            self.te_idx, self.te_len, self.te_idx_adj = self.prepare_sets(np.logical_and(mask, self.seq_len_mask))
             print(f"Test set transcripts: {len(self.te_idx)}")
             
     def prepare_sets(self, mask):
@@ -171,17 +184,17 @@ class h5pyDataModule(pl.LightningDataModule):
         return set_idx[sort_idxs], set_len[sort_idxs], set_idx_adj
 
     def train_dataloader(self):
-        batches = bucket(*local_shuffle(self.tr_idx, self.tr_len), self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
+        batches = bucket(*local_shuffle(self.tr_idx, self.tr_len), self.max_memory, self.max_transcripts_per_batch, 'train')
         return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.tr_idx_adj, batches), 
                           collate_fn=collate_fn, num_workers=self.num_workers, shuffle=True, batch_size=1)
 
     def val_dataloader(self):
-        batches = bucket(self.val_idx, self.val_len, self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
+        batches = bucket(self.val_idx, self.val_len, self.max_memory, self.max_transcripts_per_batch, 'val')
         return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.val_idx_adj, batches), 
                          collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
     def test_dataloader(self):
-        batches = bucket(self.te_idx, self.te_len, self.max_seq_len, self.max_transcripts_per_batch, self.min_seq_len)
+        batches = bucket(self.te_idx, self.te_len, self.max_memory, self.max_transcripts_per_batch, 'test')
         return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 

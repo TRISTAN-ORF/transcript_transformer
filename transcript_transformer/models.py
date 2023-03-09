@@ -44,8 +44,8 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         if x_seq:
             self.nuc_emb = torch.nn.Embedding(num_tokens, dim)
 
-        self.pos_emb = FixedPositionalEmbedding(dim, max_seq_len)
-        self.layer_pos_emb = FixedPositionalEmbedding(dim_head, max_seq_len)
+        self.pos_emb = FixedPositionalEmbedding(dim, max_seq_len+2)
+        self.layer_pos_emb = FixedPositionalEmbedding(dim_head, max_seq_len+2)
         
     def on_load_checkpoint(self, checkpoint):
         if 'mlm' in checkpoint.keys() and checkpoint['mlm']:
@@ -60,7 +60,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         xs = []
         if 'ribo' in batch.keys():
             inp = batch['ribo']
-            # if offsets
+            # if offset to single position
             if inp.shape[-1] == 1:
                 xs.append(self.scalar_emb(inp)*self.ribo_count_emb.weight)
             # if no offsets
@@ -207,12 +207,11 @@ class TranscriptMLM(pl.LightningModule):
         self.test_acc = tm.Accuracy()
 
     def parse_embeddings(self, batch):
-        #TODO: implement randomization for non-seq inputs
         xs = []
         if 'ribo' in batch.keys():
             inp = batch['ribo']
-            # if offsets
-            if len(inp.shape) == 3:
+            # if offset to single position
+            if inp.shape[-1] == 1:
                 xs.append(self.scalar_emb(inp)*self.ribo_count_emb.weight)
             # if no offsets
             else:
@@ -224,12 +223,11 @@ class TranscriptMLM(pl.LightningModule):
                 xs.append(torch.einsum('ikj,jl->ikl', [x, self.ribo_read_emb.weight]))
             
         if 'seq' in batch.keys():
-            x_mask = batch['seq'] != 7
             xs.append(self.nuc_emb(batch['seq']))
             
         x_emb = torch.sum(torch.stack(xs), dim=0)
         
-        return x_emb, x_mask
+        return x_emb
 
     def rand_seq(self, x, x_mask, dist, val=False):
         # self supervised learning protocol
