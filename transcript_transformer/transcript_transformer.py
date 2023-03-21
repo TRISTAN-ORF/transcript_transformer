@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import json
+import yaml
 import h5py
 
 from transcript_transformer.models import TranscriptMLM, TranscriptSeqRiboEmb
@@ -56,7 +57,7 @@ class ParseArgs(object):
                        formatter_class=CustomFormatter)
             # TWO argvs, ie the command (git) and the subcommand (commit)
             parser.add_argument('input_data', type=str, metavar='dict_path',
-                                help="dictionary (json) path containing input data file info")
+                                help="dictionary (json/yaml) path containing input data file info")
             parser.add_argument('--train', type=str, nargs='+',
                                 help="contigs in data_path folder used for training. If not specified, "\
                                     "training is performed on all available contigs excluding val/test contigs")
@@ -143,6 +144,12 @@ class ParseArgs(object):
                                 help="window size of local attention")
             tf_parse.add_argument('--debug', type=boolean, default=False,
                                   help="debug mode disables logging and checkpointing (only for train)")
+            tf_parse.add_argument('--patience', type=int, default=8,
+                                  help="Number of epochs required without the validation loss reducing"\
+                                      "to stop training")
+            tf_parse.add_argument('--metrics', type=str, nargs='*', default=['ROC','PR'], choices=['ROC', 'PR'],
+                                  help="metrics calculated at the end of the epoch for the validation/test"\
+                                      "set. These bring a cost to memory")
             
             parser = pl.Trainer.add_argparse_args(parser)
             args = parser.parse_args(sys.argv[2:])
@@ -160,7 +167,7 @@ class ParseArgs(object):
             parser = argparse.ArgumentParser(description='Predict TIS locations',
                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
             parser.add_argument('input_data', type=str, metavar='input_data',
-                                help='path to JSON dict (h5) or fasta file, or RNA sequence')
+                                help='path to json/yaml dict (h5) or fasta file, or RNA sequence')
             parser.add_argument('input_type', type=str, metavar='input_type',
                                 help="type of input", choices=['h5', 'fa', 'RNA'])
             parser.add_argument('transfer_checkpoint', type=str, metavar='checkpoint',
@@ -182,6 +189,11 @@ class ParseArgs(object):
                                 help="number of data loader workers")
             dl_parse.add_argument('--max_transcripts_per_batch', type=int, default=300, 
                                 help="maximum of transcripts per batch")
+            dl_parse.add_argument('--max_memory', type=int, default=24000,
+                                help="MB value applied for bucket batches based on rough estimates")
+            dl_parse.add_argument('--metrics', type=str, nargs='*', default=['ROC','PR'], choices=['ROC', 'PR'],
+                                help="metrics calculated at the end of the epoch for the validation/test"\
+                                "set. These bring a cost to memory")
             
             parser = pl.Trainer.add_argparse_args(parser)
             args = parser.parse_args(sys.argv[2:])
@@ -191,23 +203,20 @@ class ParseArgs(object):
 
 def parse_json(args):
     with open(args.input_data, 'r') as fh:
-        input_data = json.load(fh)
-        args.h5_path = input_data['h5_path']
-        args.exp_path = input_data['exp_path']
-        args.y_path = input_data['y_path']
-        args.contig_path = input_data['contig_path']
-        args.id_path = input_data['id_path']
-        args.x_seq = input_data['seq']
-        args.ribo_path = input_data['ribo']
-
-        args.x_ribo = type(args.ribo_path) == dict
-        if args.x_ribo is False:
-            args.ribo_path = []
-        # experimental
-        if 'cond' in input_data.keys():
-            args.cond = {k: eval(v) for k,v in input_data['cond'].items()}
+        if args.input_data[-4:] == 'json':
+            input_data = json.load(fh)
         else:
-            args.cond = None
+            input_data = yaml.safe_load(fh)
+    args.__dict__.update(input_data)
+    args.x_ribo = type(args.ribo) == dict
+    if args.x_ribo is False:
+        args.ribo = []
+    # experimental
+    #if 'cond' in input_data.keys():
+    #    args.cond = {k: eval(v) for k,v in input_data['cond'].items()}
+    #else:
+    args.cond = None
+        
     return args
 
 def DNA2vec(dna_seq):
@@ -225,14 +234,14 @@ def prep_input(x, device):
     return {'seq': x}, y_mask
 
 def mlm_train(args):
-    print(args.x_seq)
+    print(args.seq)
     mlm = TranscriptMLM(args.mask_frac, args.rand_frac, args.lr, args.decay_rate, args.warmup_steps, 
                         args.num_tokens, args.max_seq_len, args.dim, args.depth, args.heads, args.dim_head, 
                         False, args.nb_features, args.feature_redraw_interval, args.generalized_attention,
                         args.kernel_fn, args.reversible, args.ff_chunks, args.use_scalenorm, 
                         args.use_rezero, False, args.ff_glu, args.emb_dropout, args.ff_dropout,
                         args.attn_dropout, args.local_attn_heads, args.local_window_size)
-    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo_path, args.y_path, args.x_seq, args.ribo_offset, 
+    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset, 
                                args.id_path, args.contig_path, args.train, args.val, args.test, args.max_memory,
                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, 
                                max_seq_len=args.max_seq_len, num_workers=args.num_workers, cond_fs=args.cond, collate_fn=collate_fn)
@@ -240,24 +249,24 @@ def mlm_train(args):
                                           filename="{epoch:02d}_{val_loss:.2f}", save_top_k=1, mode="min")
     tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join(args.log_dir, args.name))
     trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1, 
-                                            callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=8)],
+                                            callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=args.patience)],
                                             logger=tb_logger)
     trainer.fit(mlm, datamodule=tr_loader)
     trainer.test(mlm, datamodule=tr_loader, ckpt_path='best')
 
 def train(args):
     if args.transfer_checkpoint:
-        trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, x_seq=args.x_seq, x_ribo=args.x_ribo,
+        trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, x_seq=args.seq, x_ribo=args.x_ribo,
                                                                 lr=args.lr, decay_rate=args.decay_rate, warmup_step=args.warmup_steps, max_seq_len=args.max_seq_len)
     else:
-        trans_model = TranscriptSeqRiboEmb(args.x_seq, args.x_ribo, args.num_tokens, args.lr, args.decay_rate, args.warmup_steps,
+        trans_model = TranscriptSeqRiboEmb(args.seq, args.x_ribo, args.num_tokens, args.lr, args.decay_rate, args.warmup_steps,
                 args.max_seq_len, args.dim, args.depth, args.heads, args.dim_head, False, args.nb_features, 
                 args.feature_redraw_interval, args.generalized_attention, args.kernel_fn, 
                 args.reversible, args.ff_chunks, args.use_scalenorm, args.use_rezero, False,
                 args.ff_glu, args.emb_dropout, args.ff_dropout, args.attn_dropout,
-                args.local_attn_heads, args.local_window_size)
+                args.local_attn_heads, args.local_window_size, args.metrics)
         
-    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo_path, args.y_path, args.x_seq, args.ribo_offset, 
+    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset, 
                                args.id_path, args.contig_path, train=args.train, val=args.val, test=args.test, max_memory=args.max_memory,
                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, 
                                num_workers=args.num_workers, cond_fs=args.cond, leaky_frac=args.leaky_frac, collate_fn=collate_fn)
@@ -268,7 +277,7 @@ def train(args):
         trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1, enable_checkpointing=False, logger=False)
     else:
         trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1,
-                                                callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=8)],
+                                                callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=args.patience)],
                                                 logger=tb_logger)
     trainer.fit(trans_model, datamodule=tr_loader)
     trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
@@ -276,17 +285,18 @@ def train(args):
 def predict(args):
     assert args.input_type in ['h5', 'fa', 'RNA'], "input type not valid, must be one of 'h5', 'fa', or 'RNA'"  
     device = torch.device('cuda') if args.gpus else torch.device('cpu')
-    trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint)
+    trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, max_seq_len=args.max_seq_len, metrics=args.metrics)
     trans_model.to(device)
     trans_model.eval()
     out = {}
 
     if args.input_type == 'h5':
         args = parse_json(args)
-        tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo_path, args.y_path, args.x_seq, args.ribo_offset, 
+        tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset, 
                                 args.id_path, args.contig_path, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
                                 min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, num_workers=args.num_workers, collate_fn=collate_fn)
         trainer = pl.Trainer(accelerator='gpu' if args.gpus else 'cpu', devices=1,  logger=False, enable_checkpointing=False)
+        ## TODO implement predict!
         trainer.test(trans_model, dataloaders=tr_loader)
         out['id'] = np.array(trans_model.labels)
         out['pred'] = np.array([t.detach().cpu().numpy() for t in trans_model.test_outputs], dtype=object)
@@ -301,19 +311,21 @@ def predict(args):
             out['id'] = np.array([seq.replace('\n','') for seq in tr_ids])
             tr_seqs = [seq.replace('\n','').upper() for seq in tr_seqs]
             x_data = [DNA2vec(seq) for seq in tr_seqs if (len(seq) < args.max_seq_len) and (len(seq) > args.min_seq_len)]
+            if len(out['id']) == 1:
+                out['id'] = out['id'][0]
             
         elif args.input_type == 'RNA':
             assert len(args.input_data) < args.max_seq_len, f'input is longer than maximum input length: {args.max_seq_len}'
             assert len(args.input_data) > args.min_seq_len, f'input is smaller than minimum input length: {args.min_seq_len}'
             x_data = [DNA2vec(args.input_data.upper())]
-            out['id'] = np.array(['seq_1'])
+            out['id'] = 'seq_1'
         
         print('\nProcessing data')
         outputs = []
         for i,x in enumerate(x_data):
             print('\r{:.2f}%'.format(i/len(x_data)*100), end='')
-            out = F.softmax(trans_model.forward(*prep_input(x, device)), dim=1)[:,1]
-            outputs.append(out.detach().cpu().numpy())
+            output = F.softmax(trans_model.forward(*prep_input(x, device)), dim=1)[:,1]
+            outputs.append(output.detach().cpu().numpy())
         out['pred'] = np.array(outputs, dtype=object)
     
     if args.output_type == 'npy':
@@ -328,7 +340,7 @@ def predict(args):
             dtype = h5py.vlen_dtype(np.dtype('bool')) if len(out['pred']) > 1 else 'bool'
             grp.create_dataset('target', data=out['target'], dtype=dtype)
         out_h.close()
-    print(f'\nResults saved to `{args.save_path}')
+    print(f"\nResults saved to '{args.save_path}'")
 
 def main():
     args = ParseArgs()
