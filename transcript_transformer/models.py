@@ -13,7 +13,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                  use_rezero, tie_embed, ff_glu, emb_dropout, ff_dropout, attn_dropout,
                  local_attn_heads, local_window_size, mlm, mask_frac, rand_frac, metrics):
         super().__init__()
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['kernel_fn'])
         self.transformer = Performer(dim=dim, depth=depth, heads=heads, dim_head=dim_head,
                                      causal=causal, nb_features=nb_features,
                                      feature_redraw_interval=feature_redraw_interval,
@@ -40,16 +40,14 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
             self.loss = torch.nn.CrossEntropyLoss()
             pos_label = 2
             if 'ROC' in metrics:
-                self.val_rocauc = tm.AUROC(
-                    pos_label=pos_label, compute_on_step=False)
-                self.test_rocauc = tm.AUROC(
-                    pos_label=pos_label, compute_on_step=False)
+                self.val_rocauc = tm.AUROC('binary', pos_label=pos_label)
+                self.test_rocauc = tm.AUROC('binary', pos_label=pos_label)
 
             if 'PR' in metrics:
                 self.val_prauc = tm.AveragePrecision(
-                    pos_label=pos_label, compute_on_step=False)
+                    'binary', pos_label=pos_label)
                 self.test_prauc = tm.AveragePrecision(
-                    pos_label=pos_label, compute_on_step=False)
+                    'binary', pos_label=pos_label)
 
         self.ff_1 = torch.nn.Linear(dim, dim*2)
         self.ff_2 = torch.nn.Linear(dim*2, pos_label)
@@ -142,7 +140,6 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         x_mask[torch.arange(x_mask.shape[0]), x_mask.sum(dim=1)] = 1
 
         x = self.parse_embeddings(batch)
-
         if self.mlm:
             dist = torch.empty(
                 batch['y'].shape, device=self.device).uniform_(0, 1,)
@@ -162,7 +159,6 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
         layer_pos_emb = self.layer_pos_emb(x)
         x = self.transformer(x, pos_emb=layer_pos_emb, mask=x_mask)
-
         x = x[torch.logical_and(x_mask, y_mask)]
         x = x.view(-1, self.hparams.dim)
 
@@ -229,8 +225,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
         return [optimizer], [scheduler]
 
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_idx,
-                       optimizer_closure, on_tpu, using_native_amp, using_lbfgs):
+    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
         # warm up lr
         if self.trainer.global_step < self.hparams.warmup_steps:
             lr_scale = min(1., float(self.trainer.global_step +

@@ -1,4 +1,3 @@
-#import h5pickle as h5py
 import h5py
 import numpy as np
 import torch
@@ -8,7 +7,7 @@ from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
 
-def collate_fn(batch): 
+def collate_fn(batch):
     """
     custom collate function used for adding the predermined tokens 5 and 6 to every transcript 
     sequence at the beginning and end. 
@@ -149,27 +148,33 @@ class h5pyDataModule(pl.LightningDataModule):
         tr_lens = np.array(self.fh['tr_len'])
         self.seq_len_mask = np.logical_and(
             tr_lens < self.max_seq_len, tr_lens > self.min_seq_len)
-        self.cond_mask = np.full_like(self.seq_len_mask, True)
-
-        cond_ribo = {key: [] for key in self.ribo_paths.keys()}
-        cond_ribo_eval = cond_ribo.copy()
+        
+        # custom conditions # needs a rewrite
+        self.global_cond_mask = np.full_like(self.seq_len_mask, True)
+        if len(self.ribo_paths) > 0:
+            cond = {key: np.full_like(self.seq_len_mask, True) for key in self.ribo_paths.keys()}
+        else:
+            cond = {'seq': np.full_like(self.seq_len_mask, True)}
+        # Optional: implement custom masking for eval step
+        cond_eval = cond.copy()
         if self.cond_fs is not None:
             ribo_path_keys = list(self.ribo_paths.keys())
             for key, cond in self.cond_fs.items():
-                # if ribo_path key is substring of condition key
                 is_cond_ribo = np.core.defchararray.find(
                     key, ribo_path_keys) != -1
-                temp_cond_mask = cond(np.array(self.fh[key]))
+                temp_mask = cond(np.array(self.fh[key]))
                 if self.leaky_frac > 0:
                     leaky_mask = np.random.uniform(
-                        size=self.cond_mask.shape) > (1-self.leaky_frac)
-                    temp_cond_mask[leaky_mask] = True
+                        size=self.seq_len_mask.shape) > (1-self.leaky_frac)
+                    temp_mask[leaky_mask] = True
+                # apply mask to specific ribo data
                 if is_cond_ribo.any():
-                    cond_ribo[np.array(ribo_path_keys)[
-                        is_cond_ribo][0]] = temp_cond_mask
+                    cond[np.array(ribo_path_keys)[
+                        is_cond_ribo][0]] = temp_mask
+                # apply mask to all data
                 else:
-                    self.cond_mask = np.logical_and(
-                        self.cond_mask, temp_cond_mask)
+                    self.global_cond_mask = np.logical_and(
+                        self.global_cond_mask, temp_mask)
 
         if (len(self.train_contigs) == 0) and ((stage == "fit") or (stage is None)):
             contigs = np.unique(self.fh[self.contig_path]).astype(str)
@@ -187,41 +192,37 @@ class h5pyDataModule(pl.LightningDataModule):
             contig_mask = np.isin(self.fh[self.contig_path], np.array(
                 self.train_contigs).astype('S'))
             mask = np.logical_and.reduce(
-                [self.cond_mask, contig_mask, self.seq_len_mask])
+                [self.global_cond_mask, contig_mask, self.seq_len_mask])
             self.tr_idx, self.tr_len, self.tr_idx_adj = self.prepare_sets(
-                mask, cond_ribo)
+                mask, cond)
             print(f"Training set transcripts: {len(self.tr_idx)}")
-            mask = np.isin(self.fh[self.contig_path],
-                           self.val_contigs.astype('S'))
+            contig_mask = np.isin(self.fh[self.contig_path],
+                                  self.val_contigs.astype('S'))
             self.val_idx, self.val_len, self.val_idx_adj = self.prepare_sets(
-                np.logical_and(mask, self.seq_len_mask), cond_ribo_eval)
+                np.logical_and(contig_mask, self.seq_len_mask), cond_eval)
             print(f"Validation set transcripts: {len(self.val_idx)}")
         if stage in ["test", "predict"] or stage is None:
-            mask = np.isin(self.fh[self.contig_path],
-                           self.test_contigs.astype('S'))
+            contig_mask = np.isin(self.fh[self.contig_path],
+                                  self.test_contigs.astype('S'))
             self.te_idx, self.te_len, self.te_idx_adj = self.prepare_sets(
-                np.logical_and(mask, self.seq_len_mask), cond_ribo_eval)
+                np.logical_and(contig_mask, self.seq_len_mask), cond_eval)
             print(f"Test set transcripts: {len(self.te_idx)}")
 
-    def prepare_sets(self, mask, cond_ribo):
+    def prepare_sets(self, mask, cond):
         mask_set = []
         len_set = []
         sample_count = []
-        idx_adj = len(mask)
         tr_len = np.array(self.fh['tr_len'])
-        for ribo_data, ribo_mask in cond_ribo.items():
-            if len(ribo_mask) > 0:
-                mask_set.append(np.logical_and(ribo_mask, mask))
-            else:
-                mask_set.append(mask)
+        for _, cond_mask in cond.items():
+            mask_set.append(np.logical_and(cond_mask, mask))
             sample_count.append(sum(mask_set[-1]))
             len_set.append(tr_len[mask_set[-1]])
-        mask = np.concatenate(mask_set)
-        lens = np.concatenate(len_set)
+        mask = np.hstack(mask_set)
+        lens = np.hstack(len_set)
         idxs = np.where(mask)[0]
         sort_idxs = np.argsort(lens)
 
-        return idxs[sort_idxs], lens[sort_idxs], idx_adj
+        return idxs[sort_idxs], lens[sort_idxs], len(mask)
 
     def train_dataloader(self):
         batches = bucket(*local_shuffle(self.tr_idx, self.tr_len),
@@ -276,7 +277,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             x_dict = {}
             # get seq data
             if self.x_seq:
-                x_dict['seq'] = self.fh['seq'][idx]
+                x_dict['seq'] = self.fh[self.x_seq][idx]
             # get ribo data
             if len(self.ribo_paths) > 0:
                 # obtain data set and adjuster
@@ -303,5 +304,23 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
 
             xs.append(x_dict)
             ys.append(self.fh[self.y_path][idx])
+
+        return [x_ids, xs, ys]
+
+
+class DNADatasetBatches(torch.utils.data.Dataset):
+    def __init__(self, ids, xs):
+        super().__init__()
+        self.ids = ids
+        self.xs = xs
+
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, index):
+        # Transformation is performed when a sample is requested
+        x_ids = [self.ids[index]]
+        xs = [{'seq': self.xs[index]}]
+        ys = [np.ones_like(self.xs[index])]
 
         return [x_ids, xs, ys]

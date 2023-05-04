@@ -4,19 +4,19 @@ import os
 import json
 import yaml
 import h5py
-
-from transcript_transformer.models import TranscriptSeqRiboEmb
-from transcript_transformer.transcript_loader import h5pyDataModule, collate_fn
-
 import numpy as np
 import pandas as pd
 from fasta_reader import read_fasta
-from tqdm import tqdm
+
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+
+from transcript_transformer.models import TranscriptSeqRiboEmb
+from transcript_transformer.transcript_loader import h5pyDataModule, DNADatasetBatches, collate_fn
+from torch.utils.data import DataLoader
 
 
 def boolean(v):
@@ -156,7 +156,7 @@ class ParseArgs(object):
                             help="log dir")
 
         dl_parse = parser.add_argument_group(
-            'DataLoader', 'data loader arguments')
+            'DataLoader', 'Data loader arguments')
         dl_parse.add_argument('--min_seq_len', type=int, default=0,
                               help="minimum sequence length of transcripts")
         dl_parse.add_argument('--max_seq_len', type=int, default=30000,
@@ -232,7 +232,17 @@ class ParseArgs(object):
                               help="metrics calculated at the end of the epoch for the validation/test"
                               "set. These bring a cost to memory")
 
-        parser = pl.Trainer.add_argparse_args(parser)
+        tr_parse = parser.add_argument_group(
+            'Trainer', 'Pytorch-lightning Trainer arguments')
+        tr_parse.add_argument('--accelerator', type=str, default='cpu',
+                              choices=['cpu', 'gpu', 'tpu', 'ipu', 'hpu', 'mps', 'auto'], help="computational hardware to apply")
+        tr_parse.add_argument('--strategy', type=str, default='auto',
+                              help="strategy for multi-gpu computation")
+        tr_parse.add_argument('--devices', type=int,
+                              default=0, nargs='+', help="device to use")
+        tr_parse.add_argument('--max_epochs', type=int,
+                              default=60, help="maximum epochs of training")
+
         args = parser.parse_args(sys.argv[2:])
         args = parse_json(args)
         if mlm:
@@ -262,6 +272,15 @@ class ParseArgs(object):
         parser.add_argument('--output_type', type=str, default='npy', choices=['npy', 'h5'],
                             help="file type of raw model predictions")
 
+        tr_parse = parser.add_argument_group(
+            'Trainer', 'Pytorch-lightning Trainer arguments')
+        tr_parse.add_argument('--accelerator', type=str, default='cpu',
+                              choices=['cpu', 'gpu', 'tpu', 'ipu', 'hpu', 'mps', 'auto'], help="computational hardware to apply")
+        tr_parse.add_argument('--strategy', type=str, default='auto',
+                              help="strategy for multi-gpu computation")
+        tr_parse.add_argument('--devices', type=str,
+                              default='auto', nargs='+', help="device to use")
+
         dl_parse = parser.add_argument_group(
             'DataLoader', 'data loader arguments (when loading from h5 file)')
         dl_parse.add_argument('--test', type=str, nargs='+',
@@ -282,7 +301,6 @@ class ParseArgs(object):
                               help="metrics calculated at the end of the epoch for the validation/test"
                               "set. These bring a cost to memory")
 
-        parser = pl.Trainer.add_argparse_args(parser)
         args = parser.parse_args(sys.argv[2:])
 
         print('Imputing labels from trained model: {}'.format(args))
@@ -312,13 +330,15 @@ def train(args):
     tb_logger = pl.loggers.TensorBoardLogger(
         '.', os.path.join(args.log_dir, args.name))
     if args.debug:
-        trainer = pl.Trainer.from_argparse_args(
-            args, reload_dataloaders_every_n_epochs=1, enable_checkpointing=False, logger=False)
+        trainer = pl.Trainer(args.accelerator, args.strategy, args.devices, max_epochs=args.max_epochs, reload_dataloaders_every_n_epochs=1,
+                             callbacks=[EarlyStopping(
+                                 monitor="val_loss", mode="min", patience=args.patience)],
+                             enable_checkpointing=False, logger=False)
     else:
-        trainer = pl.Trainer.from_argparse_args(args, reload_dataloaders_every_n_epochs=1,
-                                                callbacks=[checkpoint_callback, EarlyStopping(
-                                                    monitor="val_loss", mode="min", patience=args.patience)],
-                                                logger=tb_logger)
+        trainer = pl.Trainer(args.accelerator, args.strategy, args.devices, max_epochs=args.max_epochs, reload_dataloaders_every_n_epochs=1,
+                             callbacks=[checkpoint_callback, EarlyStopping(
+                                 monitor="val_loss", mode="min", patience=args.patience)],
+                             logger=tb_logger)
     trainer.fit(trans_model, datamodule=tr_loader)
     trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
 
@@ -326,69 +346,57 @@ def train(args):
 def predict(args):
     assert args.input_type in [
         'h5', 'fa', 'RNA'], "input type not valid, must be one of 'h5', 'fa', or 'RNA'"
-    device = torch.device('cuda') if args.gpus else torch.device('cpu')
     trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, max_seq_len=args.max_seq_len,
                                                             mlm=False, mask_frac=0.85, rand_frac=0.15, metrics=[])
-    trans_model.to(device)
-    trans_model.eval()
-    out = {}
-
+    trainer = pl.Trainer(args.accelerator, args.strategy,
+                         args.devices, enable_checkpointing=False, logger=None)
     if args.input_type == 'h5':
         args = parse_json(args)
         tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset,
                                    args.id_path, args.contig_path, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
                                    min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, num_workers=args.num_workers, collate_fn=collate_fn)
-        trainer = pl.Trainer(accelerator='gpu' if args.gpus else 'cpu',
-                             devices=1,  logger=False, enable_checkpointing=False)
-        out = trainer.predict(trans_model, dataloaders=tr_loader)
-        out['id'] = np.array(trans_model.labels)
-        out['pred'] = np.array([t.detach().cpu().numpy()
-                               for t in trans_model.test_outputs], dtype=object)
-        out['target'] = np.array([t.detach().cpu().numpy()
-                                 for t in trans_model.test_targets], dtype=object)
     else:
-        if args.input_type == 'fa':
+        if args.input_type == 'RNA':
+            tr_seqs = args.input_data.upper()
+            x_data = [DNA2vec(tr_seqs)]
+            tr_ids = 'seq_1'
+        elif args.input_type == 'fa':
             tr_ids = []
             tr_seqs = []
             for item in read_fasta(args.input_data):
                 tr_ids.append(item.defline)
                 tr_seqs.append(item.sequence)
             x_data = [DNA2vec(seq) for seq in tr_seqs]
-            out['id'] = tr_ids
+        tr_loader = DataLoader(DNADatasetBatches(
+            tr_ids, x_data), collate_fn=collate_fn, batch_size=1)
 
-        elif args.input_type == 'RNA':
-            tr_seqs = args.input_data.upper()
-            x_data = [DNA2vec(tr_seqs)]
-            out['id'] = 'seq_1'
+    print('\nRunning sequences through model')
+    out = trainer.predict(trans_model, dataloaders=tr_loader)
+    ids = np.array([o[2] for o in out])
+    preds = np.array([o[0][0] for o in out], dtype=object)
+    if args.input_type == 'h5':
+        targets = np.array([o[1][0] for o in out], dtype=object)
 
-        print('\nRunning sequences through model')
-        outputs = []
-        for x in tqdm(x_data):
-            pred, _, _ = trans_model.forward(prep_input(x, device))
-            output = F.softmax(pred, dim=1)[:, 1]
-            outputs.append(output.detach().cpu().numpy().ravel())
-        out['pred'] = np.array(outputs, dtype=object)
-
-        mask = [np.where(out > args.prob_th)[0] for out in outputs]
-        if len(np.hstack(mask)) > 0:
-            df = process_results(mask, out['id'], out['pred'], tr_seqs)
-            print(df)
-            df.to_csv(args.save_path)
-            print(f"\nSites of interest saved to '{args.save_path}.csv'")
+    mask = [np.where(pred > args.prob_th)[0] for pred in preds]
+    if len(np.hstack(mask)) > 0:
+        df = process_results(mask, ids, preds, tr_seqs)
+        print(df)
+        df.to_csv(f"{args.save_path}.csv")
+        print(f"\nSites of interest saved to '{args.save_path}.csv'")
 
     if args.output_type == 'npy':
-        np.save(args.save_path, np.array(list(out.values()), dtype=object).T)
+        np.save(args.save_path, np.array(out, dtype=object))
     else:
         out_h = h5py.File(f'{args.save_path}', mode='w')
         grp = out_h.create_group('outputs')
-        grp.create_dataset('id', data=out['id'].astype('S'),)
+        grp.create_dataset('id', data=ids.astype('S'),)
         dtype = h5py.vlen_dtype(np.dtype('float16')) if len(
-            out['pred']) > 1 else np.float16
-        grp.create_dataset('pred', data=out['pred'], dtype=dtype)
+            preds) > 1 else np.float16
+        grp.create_dataset('pred', data=preds, dtype=dtype)
         if 'target' in out.keys():
             dtype = h5py.vlen_dtype(np.dtype('bool')) if len(
-                out['pred']) > 1 else 'bool'
-            grp.create_dataset('target', data=out['target'], dtype=dtype)
+                preds) > 1 else 'bool'
+            grp.create_dataset('target', data=targets, dtype=dtype)
         out_h.close()
     print(f"Raw model outputs saved to '{args.save_path}.{args.output_type}'")
 
