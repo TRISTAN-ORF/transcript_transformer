@@ -379,7 +379,7 @@ def predict(args):
             tr_seqs = []
             for item in read_fasta(args.input_data):
                 tr_ids.append(item.defline)
-                tr_seqs.append(item.sequence)
+                tr_seqs.append(item.sequence.upper())
             x_data = [DNA2vec(seq) for seq in tr_seqs]
         tr_loader = DataLoader(DNADatasetBatches(
             tr_ids, x_data), collate_fn=collate_fn, batch_size=1)
