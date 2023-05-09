@@ -114,7 +114,7 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
 
 class h5pyDataModule(pl.LightningDataModule):
     def __init__(self, h5py_path, exp_path, ribo_paths, y_path, x_seq=False, ribo_offset=False, id_path='id', contig_path='contig',
-                 train=[], val=[], test=[], max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5,
+                 merge_dict=[], train=[], val=[], test=[], max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5,
                  cond_fs=None, leaky_frac=0.05, collate_fn=collate_fn):
         super().__init__()
         self.ribo_paths = ribo_paths
@@ -130,6 +130,7 @@ class h5pyDataModule(pl.LightningDataModule):
         self.h5py_path = h5py_path
         self.exp_path = exp_path
         self.contig_path = contig_path
+        self.merge_dict = merge_dict
         self.train_contigs = np.ravel([train]) if train else []
         self.val_contigs = np.ravel([val]) if val else []
         self.test_contigs = np.ravel([test]) if test else []
@@ -148,33 +149,40 @@ class h5pyDataModule(pl.LightningDataModule):
         tr_lens = np.array(self.fh['tr_len'])
         self.seq_len_mask = np.logical_and(
             tr_lens < self.max_seq_len, tr_lens > self.min_seq_len)
-        
+
         # custom conditions # needs a rewrite
         self.global_cond_mask = np.full_like(self.seq_len_mask, True)
-        if len(self.ribo_paths) > 0:
-            cond = {key: np.full_like(self.seq_len_mask, True) for key in self.ribo_paths.keys()}
+
+        if len(self.ribo_paths) > 0 and len(self.ribo_paths) == len(self.merge_dict):
+            cond = {key: np.full_like(self.seq_len_mask, True)
+                    for key in self.ribo_paths.keys()}
+            cond_eval = cond.copy()
+            # currently, custom masks is disabled for merged option to avoid conflicts
+            if self.cond_fs is not None:
+                ribo_path_keys = list(self.ribo_paths.keys())
+                for key, cond in self.cond_fs.items():
+                    is_cond_ribo = np.core.defchararray.find(
+                        key, ribo_path_keys) != -1
+                    temp_mask = cond(np.array(self.fh[key]))
+                    if self.leaky_frac > 0:
+                        leaky_mask = np.random.uniform(
+                            size=self.seq_len_mask.shape) > (1-self.leaky_frac)
+                        temp_mask[leaky_mask] = True
+                    # apply mask to specific ribo data
+                    if is_cond_ribo.any():
+                        cond[np.array(ribo_path_keys)[
+                            is_cond_ribo][0]] = temp_mask
+                    # apply mask to all data
+                    else:
+                        self.global_cond_mask = np.logical_and(
+                            self.global_cond_mask, temp_mask)
+        elif len(self.ribo_paths) > 0:
+            cond = {key: np.full_like(self.seq_len_mask, True)
+                    for key in self.merge_dict.keys()}
+            cond_eval = cond.copy()
         else:
             cond = {'seq': np.full_like(self.seq_len_mask, True)}
-        # Optional: implement custom masking for eval step
-        cond_eval = cond.copy()
-        if self.cond_fs is not None:
-            ribo_path_keys = list(self.ribo_paths.keys())
-            for key, cond in self.cond_fs.items():
-                is_cond_ribo = np.core.defchararray.find(
-                    key, ribo_path_keys) != -1
-                temp_mask = cond(np.array(self.fh[key]))
-                if self.leaky_frac > 0:
-                    leaky_mask = np.random.uniform(
-                        size=self.seq_len_mask.shape) > (1-self.leaky_frac)
-                    temp_mask[leaky_mask] = True
-                # apply mask to specific ribo data
-                if is_cond_ribo.any():
-                    cond[np.array(ribo_path_keys)[
-                        is_cond_ribo][0]] = temp_mask
-                # apply mask to all data
-                else:
-                    self.global_cond_mask = np.logical_and(
-                        self.global_cond_mask, temp_mask)
+            cond_eval = cond.copy()
 
         if (len(self.train_contigs) == 0) and ((stage == "fit") or (stage is None)):
             contigs = np.unique(self.fh[self.contig_path]).astype(str)
@@ -227,30 +235,30 @@ class h5pyDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         batches = bucket(*local_shuffle(self.tr_idx, self.tr_len),
                          self.max_memory, self.max_transcripts_per_batch, 'train')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.tr_idx_adj, batches),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.tr_idx_adj, batches, self.merge_dict),
                           collate_fn=collate_fn, num_workers=self.num_workers, shuffle=True, batch_size=1)
 
     def val_dataloader(self):
         batches = bucket(self.val_idx, self.val_len,
                          self.max_memory, self.max_transcripts_per_batch, 'val')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.val_idx_adj, batches),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.val_idx_adj, batches, self.merge_dict),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
     def test_dataloader(self):
         batches = bucket(self.te_idx, self.te_len, self.max_memory,
                          self.max_transcripts_per_batch, 'test')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
     def predict_dataloader(self):
         batches = bucket(self.te_idx, self.te_len, self.max_memory,
                          self.max_transcripts_per_batch, 'test')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
 
 class h5pyDatasetBatches(torch.utils.data.Dataset):
-    def __init__(self, fh, ribo_paths, y_path, id_path, x_seq, ribo_offset, idx_adj, batches):
+    def __init__(self, fh, ribo_paths, y_path, id_path, x_seq, ribo_offset, idx_adj, batches, merge_dict):
         super().__init__()
         self.fh = fh
         self.ribo_paths = ribo_paths
@@ -260,6 +268,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         self.ribo_offset = ribo_offset
         self.idx_adj = idx_adj
         self.batches = batches
+        self.merge_dict = merge_dict
 
     def __len__(self):
         return len(self.batches)
@@ -281,30 +290,35 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             # get ribo data
             if len(self.ribo_paths) > 0:
                 # obtain data set and adjuster
-                data_path = list(self.ribo_paths.keys())[
-                    idx_conc//self.idx_adj]
-                x = load_sparse(self.fh[data_path], idx, format='csr').T
+                data_set_idx = idx_conc//self.idx_adj
+                data_path_idxs = self.merge_dict[data_set_idx]
+                x_merge = []
+                for data_path_idx in data_path_idxs:
+                    data_path = np.array(list(self.ribo_paths.keys()))[
+                        data_path_idx]
+                    x = load_sparse(self.fh[data_path], idx, format='csr').T
+                    if self.ribo_offset:
+                        for col_i, (col_key, shift) in enumerate(self.ribo_paths[data_path].items()):
+                            if (shift != 0) and (shift > 0):
+                                x[:shift, col_i] = 0
+                                x[shift:, col_i] = x[:-shift, col_i]
+                            elif (shift != 0) and (shift < 0):
+                                x[-shift:, col_i] = 0
+                                x[:-shift, col_i] = x[shift:, col_i]
+                        # get total number of reads per position
+                        x = x.sum(axis=1)
+                    x_merge.append(x)
+                # sum over multiple data sets (when applicable)
+                x = np.sum(x_merge, axis=0)
                 if self.ribo_offset:
-                    #col_names = np.array(self.fh[data_path]['col_names']).astype(str)
-                    for col_i, (col_key, shift) in enumerate(self.ribo_paths[data_path].items()):
-                        #mask = col_names == col_key
-                        if (shift != 0) and (shift > 0):
-                            x[:shift, col_i] = 0
-                            x[shift:, col_i] = x[:-shift, col_i]
-                        elif (shift != 0) and (shift < 0):
-                            x[-shift:, col_i] = 0
-                            x[:-shift, col_i] = x[shift:, col_i]
-                    # get total number of reads per position
-                    x = x.sum(axis=1)
                     # normalize including all positions,reads
                     x_dict['ribo'] = x/np.maximum(x.max(), 1)
                 else:
                     # normalize including all positions,reads
                     x_dict['ribo'] = x/np.maximum(np.sum(x, axis=1).max(), 1)
-
+                    
             xs.append(x_dict)
             ys.append(self.fh[self.y_path][idx])
-
         return [x_ids, xs, ys]
 
 

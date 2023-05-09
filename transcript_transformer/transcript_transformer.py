@@ -1,6 +1,7 @@
 import argparse
 import sys
 import os
+import itertools
 import json
 import yaml
 import h5py
@@ -40,12 +41,19 @@ def parse_json(args):
     args.x_ribo = type(args.ribo) == dict
     if args.x_ribo is False:
         args.ribo = []
-    # experimental
     if 'cond' in input_data.keys():
         args.cond = {k: eval(v) for k, v in input_data['cond'].items()}
     else:
         args.cond = None
-
+    if 'merge' not in input_data.keys() or type(args.ribo) != dict:
+        args.merge = []
+    args.merge_dict = {}
+    merg_mask = ~np.isin(np.arange(len(args.ribo)),
+                         list(itertools.chain(*args.merge)))
+    for data_idx in np.where(merg_mask)[0]:
+        args.merge += [[data_idx]]
+    for i, set in enumerate(args.merge):
+        args.merge_dict[i] = set
     return args
 
 
@@ -302,6 +310,8 @@ class ParseArgs(object):
                               "set. These bring a cost to memory")
 
         args = parser.parse_args(sys.argv[2:])
+        if args.input_type == 'h5':
+            args = parse_json(args)
 
         print('Imputing labels from trained model: {}'.format(args))
         predict(args)
@@ -322,7 +332,7 @@ def train(args):
                                            args.local_attn_heads, args.local_window_size, args.mlm, args.mask_frac, args.rand_frac, args.metrics)
 
     tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset,
-                               args.id_path, args.contig_path, train=args.train, val=args.val, test=args.test, max_memory=args.max_memory,
+                               args.id_path, args.contig_path, args.merge_dict, train=args.train, val=args.val, test=args.test, max_memory=args.max_memory,
                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len,
                                num_workers=args.num_workers, cond_fs=args.cond, leaky_frac=args.leaky_frac, collate_fn=collate_fn)
     checkpoint_callback = ModelCheckpoint(monitor="val_loss",
@@ -340,20 +350,24 @@ def train(args):
                                  monitor="val_loss", mode="min", patience=args.patience)],
                              logger=tb_logger)
     trainer.fit(trans_model, datamodule=tr_loader)
+    print(trainer.checkpoint_callbacks)
     trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
 
 
 def predict(args):
-    assert args.input_type in [
-        'h5', 'fa', 'RNA'], "input type not valid, must be one of 'h5', 'fa', or 'RNA'"
-    trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, max_seq_len=args.max_seq_len,
-                                                            mlm=False, mask_frac=0.85, rand_frac=0.15, metrics=[])
+    if args.accelerator == 'cpu':
+        map_location=torch.device('cpu')
+    else:
+        map_location=torch.device('cuda')
+        
     trainer = pl.Trainer(args.accelerator, args.strategy,
                          args.devices, enable_checkpointing=False, logger=None)
+    trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, map_location=map_location, strict=False, max_seq_len=args.max_seq_len,
+                                                            mlm=False, mask_frac=0.85, rand_frac=0.15, metrics=[])
     if args.input_type == 'h5':
         args = parse_json(args)
         tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset,
-                                   args.id_path, args.contig_path, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
+                                   args.id_path, args.contig_path, args.merge_dict, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
                                    min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, num_workers=args.num_workers, collate_fn=collate_fn)
     else:
         if args.input_type == 'RNA':

@@ -13,7 +13,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                  use_rezero, tie_embed, ff_glu, emb_dropout, ff_dropout, attn_dropout,
                  local_attn_heads, local_window_size, mlm, mask_frac, rand_frac, metrics):
         super().__init__()
-        self.save_hyperparameters(ignore=['kernel_fn'])
+        self.save_hyperparameters()
         self.transformer = Performer(dim=dim, depth=depth, heads=heads, dim_head=dim_head,
                                      causal=causal, nb_features=nb_features,
                                      feature_redraw_interval=feature_redraw_interval,
@@ -40,14 +40,12 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
             self.loss = torch.nn.CrossEntropyLoss()
             pos_label = 2
             if 'ROC' in metrics:
-                self.val_rocauc = tm.AUROC('binary', pos_label=pos_label)
-                self.test_rocauc = tm.AUROC('binary', pos_label=pos_label)
+                self.val_rocauc = tm.AUROC(task='binary')
+                self.test_rocauc = tm.AUROC(task='binary')
 
             if 'PR' in metrics:
-                self.val_prauc = tm.AveragePrecision(
-                    'binary', pos_label=pos_label)
-                self.test_prauc = tm.AveragePrecision(
-                    'binary', pos_label=pos_label)
+                self.val_prauc = tm.AveragePrecision(task='binary')
+                self.test_prauc = tm.AveragePrecision(task='binary')
 
         self.ff_1 = torch.nn.Linear(dim, dim*2)
         self.ff_2 = torch.nn.Linear(dim*2, pos_label)
@@ -193,11 +191,11 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
 
         self.log('test_loss', self.loss(y_hat, y_true), batch_size=len(y_true))
         if hasattr(self, 'test_prauc'):
-            self.test_prauc(F.softmax(y_hat, dim=1)[:, 1], y_true)
+            self.test_prauc(F.softmax(y_hat, dim=1)[:,1], y_true)
             self.log('test_prauc', self.test_prauc, on_step=False,
                      on_epoch=True, batch_size=len(y_true))
         if hasattr(self, 'test_rocauc'):
-            self.test_rocauc(F.softmax(y_hat, dim=1)[:, 1], y_true)
+            self.test_rocauc(F.softmax(y_hat, dim=1)[:,1], y_true)
             self.log('test_rocauc', self.test_rocauc, on_step=False,
                      on_epoch=True, batch_size=len(y_true))
 
