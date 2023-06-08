@@ -6,7 +6,6 @@ from torch.nn.functional import pad
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
-
 def collate_fn(batch):
     """
     custom collate function used for adding the predermined tokens 5 and 6 to every transcript 
@@ -160,10 +159,10 @@ class h5pyDataModule(pl.LightningDataModule):
             # currently, custom masks is disabled for merged option to avoid conflicts
             if self.cond_fs is not None:
                 ribo_path_keys = list(self.ribo_paths.keys())
-                for key, cond in self.cond_fs.items():
+                for key, cond_f in self.cond_fs.items():
                     is_cond_ribo = np.core.defchararray.find(
                         key, ribo_path_keys) != -1
-                    temp_mask = cond(np.array(self.fh[key]))
+                    temp_mask = cond_f(np.array(self.fh[key]))
                     if self.leaky_frac > 0:
                         leaky_mask = np.random.uniform(
                             size=self.seq_len_mask.shape) > (1-self.leaky_frac)

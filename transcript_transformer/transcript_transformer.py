@@ -10,7 +10,6 @@ import pandas as pd
 from fasta_reader import read_fasta
 
 import torch
-import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
@@ -297,7 +296,7 @@ class ParseArgs(object):
                               help="offset mapped ribosome reads by read length")
         dl_parse.add_argument('--min_seq_len', type=int, default=0,
                               help="minimum sequence length of transcripts")
-        dl_parse.add_argument('--max_seq_len', type=int, default=30000,
+        dl_parse.add_argument('--max_seq_len', type=int, default=50000,
                               help="maximum sequence length of transcripts")
         dl_parse.add_argument('--num_workers', type=int, default=12,
                               help="number of data loader workers")
@@ -395,7 +394,7 @@ def predict(args):
     if len(np.hstack(mask)) > 0:
         df = process_results(mask, ids, preds, tr_seqs)
         print(df)
-        df.to_csv(f"{args.save_path}.csv")
+        df.to_csv(f"{args.save_path}.csv", index=None)
         print(f"\nSites of interest saved to '{args.save_path}.csv'")
 
     if args.output_type == 'npy':
@@ -424,7 +423,7 @@ def process_results(mask, ids, preds, seqs):
         for idx in idxs:
             prot_seq, has_stop = construct_prot(tr[idx:])
             TTS_pos = idx+len(prot_seq)*3
-            df.loc[num] = [ids[i], len(tr), idx+1, preds[i][idx], tr[idx:idx+3], TTS_pos, tr[TTS_pos:TTS_pos+3],
+            df.loc[num] = [ids[i][0], len(tr), idx+1, preds[i][idx], tr[idx:idx+3], TTS_pos, tr[TTS_pos:TTS_pos+3],
                            has_stop, len(prot_seq), prot_seq]
             num += 1
     return df
