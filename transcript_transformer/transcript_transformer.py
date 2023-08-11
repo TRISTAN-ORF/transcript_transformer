@@ -142,7 +142,7 @@ def train(args, predict=False, enable_model_summary=True):
     else:
         trans_model = TranscriptSeqRiboEmb(args.use_seq, args.use_ribo, args.num_tokens, args.lr, args.decay_rate, args.warmup_steps,
                                            args.max_seq_len, args.dim, args.depth, args.heads, args.dim_head, False, args.nb_features,
-                                           args.feature_redraw_interval, args.generalized_attention, torch.nn.ReLU(),
+                                           args.feature_redraw_interval, not args.no_generalized_attention, torch.nn.ReLU(),
                                            args.reversible, args.ff_chunks, args.use_scalenorm, args.use_rezero, False,
                                            args.ff_glu, args.emb_dropout, args.ff_dropout, args.attn_dropout,
                                            args.local_attn_heads, args.local_window_size, args.mlm, args.mask_frac, args.rand_frac, args.metrics)

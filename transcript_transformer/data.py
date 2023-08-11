@@ -12,7 +12,6 @@ import h5max
 import pyfaidx
 from gtfparse import read_gtf
 
-from pdb import set_trace
 
 def co_to_idx(start, end):
     return start - 1, end

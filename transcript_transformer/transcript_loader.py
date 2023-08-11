@@ -4,7 +4,6 @@ import torch
 from h5max import load_sparse
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
-from pdb import set_trace
 
 def collate_fn(batch):
     """
@@ -120,8 +119,7 @@ class h5pyDataModule(pl.LightningDataModule):
         self.ribo_shifts = ribo_shifts
         self.ribo_offset = ribo_offset
         if ribo_offset:
-            assert len(list(ribo_ids.values(
-            ))) > 0, f"No offset values present in ribo_ids input, check the function docstring"
+            assert len(ribo_shifts) > 0, f"No offset values present in ribo_ids input, check the input config file"
         # support for training on multiple datasets
         self.n_data = max(len(self.ribo_ids), 1)
         self.use_seq = use_seq

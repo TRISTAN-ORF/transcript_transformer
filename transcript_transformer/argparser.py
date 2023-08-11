@@ -4,6 +4,7 @@ import yaml
 import argparse
 import numpy as np
 
+
 class Parser(argparse.ArgumentParser):
     def __init__(self, stage="None", **kwargs):
         super().__init__(
@@ -368,7 +369,7 @@ def parse_config_file(args):
     args.y_path = "tis"
     args.contig_path = "contig"
     args.id_path = "id"
-    
+
     # read dict and add to args
     with open(args.input_config, "r") as fh:
         if args.input_config[-4:] == "json":
@@ -376,34 +377,38 @@ def parse_config_file(args):
         else:
             input_config = yaml.safe_load(fh)
     args.__dict__.update(input_config)
-    
+
     # backward compatibility
     if "seq" in args:
         args.use_seq = args.seq
-    cond_1 = (type(args.ribo_paths) == dict) and (len(args.ribo_paths) > 0)
+    cond_1 = (
+        ("ribo_paths" in args)
+        and (type(args.ribo_paths) == dict)
+        and (len(args.ribo_paths) > 0)
+    )
     cond_2 = ("ribo" in args) and (len(args.ribo) > 0)
-    args.use_ribo = (cond_1 or cond_2)
+    args.use_ribo = cond_1 or cond_2
     args.ribo_shifts = {}
-    
+
     # ribo takes precedence over ribo_paths, can also includes read shifts
     if args.use_ribo:
         if cond_2:
             if type(args.ribo) == dict:
-                args.ribo_ids = list(args.ribo).keys()
+                args.ribo_ids = list(args.ribo.keys())
                 args.ribo_shifts = args.ribo
             else:
                 args.ribo_ids = args.ribo
         else:
-            args.ribo_ids =  list(args.ribo_paths.keys())
+            args.ribo_ids = list(args.ribo_paths.keys())
     else:
         args.ribo_ids = []
-        
+
     # conditions used to remove transcripts from training data
     if "cond" in input_config.keys():
         args.cond = {k: eval(v) for k, v in input_config["cond"].items()}
     else:
         args.cond = None
-        
+
     # creates sets of merged (or solo) datasets based on merged input
     if "merge" not in input_config.keys() or not args.use_ribo:
         args.merge = []
