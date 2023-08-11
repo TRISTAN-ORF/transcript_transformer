@@ -2,9 +2,9 @@ import h5py
 import numpy as np
 import torch
 from h5max import load_sparse
-from torch.nn.functional import pad
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+from pdb import set_trace
 
 def collate_fn(batch):
     """
@@ -112,21 +112,22 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
 
 
 class h5pyDataModule(pl.LightningDataModule):
-    def __init__(self, h5py_path, exp_path, ribo_paths, y_path, x_seq=False, ribo_offset=False, id_path='id', contig_path='contig',
-                 merge_dict=[], train=[], val=[], test=[], max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5,
+    def __init__(self, h5_path, exp_path, y_path, tr_id_path, contig_path, use_seq, ribo_ids, ribo_shifts, ribo_offset, merge_dict, train, 
+                 val, test, max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5,
                  cond_fs=None, leaky_frac=0.05, collate_fn=collate_fn):
         super().__init__()
-        self.ribo_paths = ribo_paths
+        self.ribo_ids = ribo_ids
+        self.ribo_shifts = ribo_shifts
         self.ribo_offset = ribo_offset
         if ribo_offset:
-            assert len(list(ribo_paths.values(
-            ))) > 0, f"No offset values present in ribo_paths input, check the function docstring"
+            assert len(list(ribo_ids.values(
+            ))) > 0, f"No offset values present in ribo_ids input, check the function docstring"
         # support for training on multiple datasets
-        self.n_data = max(len(self.ribo_paths), 1)
-        self.x_seq = x_seq
+        self.n_data = max(len(self.ribo_ids), 1)
+        self.use_seq = use_seq
         self.y_path = y_path
-        self.id_path = id_path
-        self.h5py_path = h5py_path
+        self.tr_id_path = tr_id_path
+        self.h5_path = h5_path
         self.exp_path = exp_path
         self.contig_path = contig_path
         self.merge_dict = merge_dict
@@ -143,22 +144,21 @@ class h5pyDataModule(pl.LightningDataModule):
         self.collate_fn = collate_fn
 
     def setup(self, stage=None):
-        self.fh = h5py.File(self.h5py_path, 'r')[self.exp_path]
+        self.fh = h5py.File(self.h5_path, 'r')[self.exp_path]
         # filter data
         tr_lens = np.array(self.fh['tr_len'])
         self.seq_len_mask = np.logical_and(
             tr_lens < self.max_seq_len, tr_lens > self.min_seq_len)
 
-        # custom conditions # needs a rewrite
+        # TODO: custom conditions needs a rewrite
         self.global_cond_mask = np.full_like(self.seq_len_mask, True)
-
-        if len(self.ribo_paths) > 0 and len(self.ribo_paths) == len(self.merge_dict):
+        if len(self.ribo_ids) > 0 and len(self.ribo_ids) == len(self.merge_dict):
             cond = {key: np.full_like(self.seq_len_mask, True)
-                    for key in self.ribo_paths.keys()}
+                    for key in self.ribo_ids}
             cond_eval = cond.copy()
             # currently, custom masks is disabled for merged option to avoid conflicts
             if self.cond_fs is not None:
-                ribo_path_keys = list(self.ribo_paths.keys())
+                ribo_path_keys = self.ribo_ids
                 for key, cond_f in self.cond_fs.items():
                     is_cond_ribo = np.core.defchararray.find(
                         key, ribo_path_keys) != -1
@@ -175,7 +175,7 @@ class h5pyDataModule(pl.LightningDataModule):
                     else:
                         self.global_cond_mask = np.logical_and(
                             self.global_cond_mask, temp_mask)
-        elif len(self.ribo_paths) > 0:
+        elif len(self.ribo_ids) > 0:
             cond = {key: np.full_like(self.seq_len_mask, True)
                     for key in self.merge_dict.keys()}
             cond_eval = cond.copy()
@@ -234,36 +234,45 @@ class h5pyDataModule(pl.LightningDataModule):
     def train_dataloader(self):
         batches = bucket(*local_shuffle(self.tr_idx, self.tr_len),
                          self.max_memory, self.max_transcripts_per_batch, 'train')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.tr_idx_adj, batches, self.merge_dict),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.tr_idx_adj, batches, self.merge_dict),
                           collate_fn=collate_fn, num_workers=self.num_workers, shuffle=True, batch_size=1)
 
     def val_dataloader(self):
         batches = bucket(self.val_idx, self.val_len,
                          self.max_memory, self.max_transcripts_per_batch, 'val')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.val_idx_adj, batches, self.merge_dict),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.val_idx_adj, batches, self.merge_dict),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
     def test_dataloader(self):
         batches = bucket(self.te_idx, self.te_len, self.max_memory,
                          self.max_transcripts_per_batch, 'test')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
     def predict_dataloader(self):
         batches = bucket(self.te_idx, self.te_len, self.max_memory,
                          self.max_transcripts_per_batch, 'test')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.ribo_paths, self.y_path, self.id_path, self.x_seq, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
+        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
                           collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
 
 
 class h5pyDatasetBatches(torch.utils.data.Dataset):
-    def __init__(self, fh, ribo_paths, y_path, id_path, x_seq, ribo_offset, idx_adj, batches, merge_dict):
+    def __init__(self, fh, y_path, tr_id_path, use_seq, ribo_ids, ribo_shifts, ribo_offset, idx_adj, batches, merge_dict):
         super().__init__()
         self.fh = fh
-        self.ribo_paths = ribo_paths
+        self.ribo_ids = ribo_ids
+        # backward compatibility
+        self.ribo_paths = []
+        for ribo_id in ribo_ids:
+            frags = ribo_id.split('/')
+            if frags[0] != 'riboseq' or frags[-1] != '5':
+                frags.insert(0, 'riboseq')
+                frags.append('5')
+            self.ribo_paths.append('/'.join(frags))
+        self.ribo_shifts = ribo_shifts
         self.y_path = y_path
-        self.id_path = id_path
-        self.x_seq = x_seq
+        self.tr_id_path = tr_id_path
+        self.use_seq = use_seq
         self.ribo_offset = ribo_offset
         self.idx_adj = idx_adj
         self.batches = batches
@@ -280,24 +289,24 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         for idx_conc in self.batches[index]:
             # get adjusted idx if multiple datasets are used
             idx = int(idx_conc % self.idx_adj)
-            # get transcript IDs
-            x_ids.append(self.fh[self.id_path][idx])
             x_dict = {}
             # get seq data
-            if self.x_seq:
-                x_dict['seq'] = self.fh[self.x_seq][idx]
+            if self.use_seq:
+                x_dict['seq'] = self.fh['seq'][idx]
+                id_prefix = ""
             # get ribo data
-            if len(self.ribo_paths) > 0:
+            if len(self.ribo_ids) > 0:
                 # obtain data set and adjuster
-                data_set_idx = idx_conc//self.idx_adj
-                data_path_idxs = self.merge_dict[data_set_idx]
+                set_idx = idx_conc//self.idx_adj
+                merged_ribo_idxs = self.merge_dict[set_idx]
                 x_merge = []
-                for data_path_idx in data_path_idxs:
-                    data_path = np.array(list(self.ribo_paths.keys()))[
-                        data_path_idx]
-                    x = load_sparse(self.fh[data_path], idx, format='csr').T
+                for i, ribo_idx in enumerate(merged_ribo_idxs):
+                    ribo_id = self.ribo_paths[ribo_idx]
+                    if i == 0:
+                        id_prefix = self.ribo_ids[ribo_idx] + "|"
+                    x = load_sparse(self.fh[ribo_id], idx, format='csr').T
                     if self.ribo_offset:
-                        for col_i, (col_key, shift) in enumerate(self.ribo_paths[data_path].items()):
+                        for col_i, (_, shift) in enumerate(self.ribo_shifts[ribo_id].items()):
                             if (shift != 0) and (shift > 0):
                                 x[:shift, col_i] = 0
                                 x[shift:, col_i] = x[:-shift, col_i]
@@ -315,7 +324,8 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
                 else:
                     # normalize including all positions,reads
                     x_dict['ribo'] = x/np.maximum(np.sum(x, axis=1).max(), 1)
-                    
+            # get transcript IDs
+            x_ids.append(id_prefix.encode() + self.fh[self.tr_id_path][idx])    
             xs.append(x_dict)
             ys.append(self.fh[self.y_path][idx])
         return [x_ids, xs, ys]

@@ -5,9 +5,8 @@ import torchmetrics as tm
 from performer_pytorch import Performer
 from performer_pytorch.performer_pytorch import FixedPositionalEmbedding
 
-
 class TranscriptSeqRiboEmb(pl.LightningModule):
-    def __init__(self, x_seq, x_ribo, num_tokens, lr, decay_rate, warmup_steps, max_seq_len, dim,
+    def __init__(self, use_seq, use_ribo, num_tokens, lr, decay_rate, warmup_steps, max_seq_len, dim,
                  depth, heads, dim_head, causal, nb_features, feature_redraw_interval,
                  generalized_attention, kernel_fn, reversible, ff_chunks, use_scalenorm,
                  use_rezero, tie_embed, ff_glu, emb_dropout, ff_dropout, attn_dropout,
@@ -52,7 +51,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         self.relu = torch.nn.ReLU()
         self.dropout = torch.nn.Dropout(emb_dropout)
 
-        if x_ribo:
+        if use_ribo:
             self.ff_emb_1 = torch.nn.Linear(1, dim)
             self.ff_emb_2 = torch.nn.Linear(dim, 6*dim)
             self.ff_emb_3 = torch.nn.Linear(6*dim, dim)
@@ -61,7 +60,7 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
                 self.ff_emb_1, self.relu, self.ff_emb_2, self.relu, self.ff_emb_3, self.tanh)
             self.ribo_count_emb = torch.nn.Embedding(1, dim)
             self.ribo_read_emb = torch.nn.Embedding(21, dim)
-        if x_seq:
+        if use_seq:
             self.nuc_emb = torch.nn.Embedding(num_tokens, dim)
 
         self.pos_emb = FixedPositionalEmbedding(dim, max_seq_len+2)
@@ -224,11 +223,9 @@ class TranscriptSeqRiboEmb(pl.LightningModule):
         return [optimizer], [scheduler]
 
     def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
-        # warm up lr
         if self.trainer.global_step < self.hparams.warmup_steps:
             lr_scale = min(1., float(self.trainer.global_step +
                            1) / self.hparams.warmup_steps)
             for pg in optimizer.param_groups:
                 pg['lr'] = lr_scale * self.hparams.lr
-        # update params
         optimizer.step(closure=optimizer_closure)

@@ -1,59 +1,39 @@
 import argparse
 import sys
 import os
-import itertools
-import json
-import yaml
 import h5py
 import numpy as np
 import pandas as pd
 from fasta_reader import read_fasta
 
 import torch
+from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
 from transcript_transformer.models import TranscriptSeqRiboEmb
 from transcript_transformer.transcript_loader import h5pyDataModule, DNADatasetBatches, collate_fn
-from torch.utils.data import DataLoader
+from transcript_transformer.data import process_data
+from transcript_transformer.argparser import Parser, parse_config_file
 
-
-def boolean(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
-
-
-def parse_json(args):
-    with open(args.input_data, 'r') as fh:
-        if args.input_data[-4:] == 'json':
-            input_data = json.load(fh)
-        else:
-            input_data = yaml.safe_load(fh)
-    args.__dict__.update(input_data)
-    args.x_ribo = type(args.ribo) == dict
-    if args.x_ribo is False:
-        args.ribo = []
-    if 'cond' in input_data.keys():
-        args.cond = {k: eval(v) for k, v in input_data['cond'].items()}
-    else:
-        args.cond = None
-    if 'merge' not in input_data.keys() or type(args.ribo) != dict:
-        args.merge = []
-    args.merge_dict = {}
-    merg_mask = ~np.isin(np.arange(len(args.ribo)),
-                         list(itertools.chain(*args.merge)))
-    for data_idx in np.where(merg_mask)[0]:
-        args.merge += [[data_idx]]
-    for i, set in enumerate(args.merge):
-        args.merge_dict[i] = set
-    return args
+CDN_PROT_DICT = {
+    'ATA': 'I', 'ATC': 'I', 'ATT': 'I', 'ATG': 'M',
+    'ACA': 'T', 'ACC': 'T', 'ACG': 'T', 'ACT': 'T',
+    'AAC': 'N', 'AAT': 'N', 'AAA': 'K', 'AAG': 'K',
+    'AGC': 'S', 'AGT': 'S', 'AGA': 'R', 'AGG': 'R',
+    'CTA': 'L', 'CTC': 'L', 'CTG': 'L', 'CTT': 'L',
+    'CCA': 'P', 'CCC': 'P', 'CCG': 'P', 'CCT': 'P',
+    'CAC': 'H', 'CAT': 'H', 'CAA': 'Q', 'CAG': 'Q',
+    'CGA': 'R', 'CGC': 'R', 'CGG': 'R', 'CGT': 'R',
+    'GTA': 'V', 'GTC': 'V', 'GTG': 'V', 'GTT': 'V',
+    'GCA': 'A', 'GCC': 'A', 'GCG': 'A', 'GCT': 'A',
+    'GAC': 'D', 'GAT': 'D', 'GAA': 'E', 'GAG': 'E',
+    'GGA': 'G', 'GGC': 'G', 'GGG': 'G', 'GGT': 'G',
+    'TCA': 'S', 'TCC': 'S', 'TCG': 'S', 'TCT': 'S',
+    'TTC': 'F', 'TTT': 'F', 'TTA': 'L', 'TTG': 'L',
+    'TAC': 'Y', 'TAT': 'Y', 'TAA': '_', 'TAG': '_',
+    'TGC': 'C', 'TGT': 'C', 'TGA': '_', 'TGG': 'W'}
 
 
 def DNA2vec(dna_seq):
@@ -88,269 +68,107 @@ def construct_prot(seq):
 
     string = ''
     for cdn in cdn_seq:
-        string += cdn_prot_dict[cdn]
+        string += CDN_PROT_DICT[cdn]
 
     return string, has_stop
 
 
-cdn_prot_dict = {
-    'ATA': 'I', 'ATC': 'I', 'ATT': 'I', 'ATG': 'M',
-    'ACA': 'T', 'ACC': 'T', 'ACG': 'T', 'ACT': 'T',
-    'AAC': 'N', 'AAT': 'N', 'AAA': 'K', 'AAG': 'K',
-    'AGC': 'S', 'AGT': 'S', 'AGA': 'R', 'AGG': 'R',
-    'CTA': 'L', 'CTC': 'L', 'CTG': 'L', 'CTT': 'L',
-    'CCA': 'P', 'CCC': 'P', 'CCG': 'P', 'CCT': 'P',
-    'CAC': 'H', 'CAT': 'H', 'CAA': 'Q', 'CAG': 'Q',
-    'CGA': 'R', 'CGC': 'R', 'CGG': 'R', 'CGT': 'R',
-    'GTA': 'V', 'GTC': 'V', 'GTG': 'V', 'GTT': 'V',
-    'GCA': 'A', 'GCC': 'A', 'GCG': 'A', 'GCT': 'A',
-    'GAC': 'D', 'GAT': 'D', 'GAA': 'E', 'GAG': 'E',
-    'GGA': 'G', 'GGC': 'G', 'GGG': 'G', 'GGT': 'G',
-    'TCA': 'S', 'TCC': 'S', 'TCG': 'S', 'TCT': 'S',
-    'TTC': 'F', 'TTT': 'F', 'TTA': 'L', 'TTG': 'L',
-    'TAC': 'Y', 'TAT': 'Y', 'TAA': '_', 'TAG': '_',
-    'TGC': 'C', 'TGT': 'C', 'TGA': '_', 'TGG': 'W'}
-
-
-class CustomFormatter(argparse.ArgumentDefaultsHelpFormatter,
-                      argparse.MetavarTypeHelpFormatter):
-    pass
-
-
-class ParseArgs(object):
-    def __init__(self):
-        parser = argparse.ArgumentParser(
-            description='Transcript Transformer launch pad',
-            usage='''transcript_transformer <command> [<args>]
-             Commands:
-               pretrain  Pretrain a model using self-supervised objective
-               train     Train a model to detect TIS locations on transcripts
-               predict   Predict TIS locations from input data
-            ''')
-        parser.add_argument('command', help='Subcommand to run')
-        args = parser.parse_args(sys.argv[1:2])
-        if args.command not in ['pretrain', 'train', 'predict']:
-            print('Unrecognized command')
-            parser.print_help()
-            exit(1)
-        # use dispatch pattern to invoke method with same name
-        if args.command == 'pretrain':
-            self.pretrain_train(mlm=True)
-        elif args.command == 'train':
-            self.pretrain_train(mlm=False)
-        else:
-            self.predict()
-
-    def pretrain_train(self, mlm):
-        parser = argparse.ArgumentParser(
-            description=f'{"Pretrain transformer using MLM objective" if mlm else "train transcript transformer"}',
-            formatter_class=CustomFormatter)
-        # TWO argvs, ie the command (git) and the subcommand (commit)
-        parser.add_argument('input_data', type=str, metavar='dict_path',
-                            help="dictionary (json/yaml) path containing input data file info")
-        parser.add_argument('--train', type=str, nargs='+',
-                            help="contigs in data_path folder used for training. If not specified, "
-                            "training is performed on all available contigs excluding val/test contigs")
-        parser.add_argument('--val', type=str, nargs='+',
-                            help="contigs in data_path folder used for validation")
-        parser.add_argument('--test', type=str, nargs='+',
-                            help="contigs in data_path folder used for testing")
-        parser.add_argument('--ribo_offset', type=boolean, default=False,
-                            help="offset mapped ribosome reads by read length")
-        parser.add_argument('--name', type=str, default='',
-                            help="name of the model")
-        parser.add_argument('--log_dir', type=str, default='lightning_logs',
-                            help="log dir")
-
-        dl_parse = parser.add_argument_group(
-            'DataLoader', 'Data loader arguments')
-        dl_parse.add_argument('--min_seq_len', type=int, default=0,
-                              help="minimum sequence length of transcripts")
-        dl_parse.add_argument('--max_seq_len', type=int, default=30000,
-                              help="maximum sequence length of transcripts")
-        dl_parse.add_argument('--leaky_frac', type=float, default=0.05,
-                              help="fraction of samples that escape conditions (ribo-seq)")
-        dl_parse.add_argument('--num_workers', type=int, default=12,
-                              help="number of data loader workers")
-        dl_parse.add_argument('--max_memory', type=int, default=24000,
-                              help="MB value applied for bucket batches based on rough estimates")
-        dl_parse.add_argument('--max_transcripts_per_batch', type=int, default=2000,
-                              help="maximum of transcripts per batch")
-
-        tf_parse = parser.add_argument_group(
-            'Model', f'Transformer arguments {"for MLM objective" if mlm else ""}')
-        tf_parse.add_argument('--transfer_checkpoint', type=str,
-                              help="Path to checkpoint pretrained model")
-        tf_parse.add_argument('--lr', type=float, default=1e-3,
-                              help="learning rate")
-        tf_parse.add_argument('--decay_rate', type=float, default=0.96,
-                              help="multiplicatively decays learning rate for every epoch")
-        tf_parse.add_argument('--warmup_steps', type=int, default=1500,
-                              help="number of warmup steps at the start of training")
-        tf_parse.add_argument('--num_tokens', type=int, default=5,
-                              help="number of unique nucleotide input tokens")
-        tf_parse.add_argument('--dim', type=int, default=30,
-                              help="dimension of the hidden states")
-        tf_parse.add_argument('--depth', type=int, default=6,
-                              help="number of layers")
-        tf_parse.add_argument('--heads', type=int, default=6,
-                              help="number of attention heads in every layer")
-        tf_parse.add_argument('--dim_head', type=int, default=16,
-                              help="dimension of the attention head matrices")
-        tf_parse.add_argument('--nb_features', type=int, default=80,
-                              help="number of random features, if not set, will default to (d * log(d)), "
-                              "where d is the dimension of each head")
-        tf_parse.add_argument('--feature_redraw_interval', type=int, default=1000,
-                              help="how frequently to redraw the projection matrix")
-        tf_parse.add_argument('--generalized_attention', type=boolean, default=True,
-                              help="applies generalized attention functions")
-        tf_parse.add_argument('--kernel_fn', type=boolean, default=torch.nn.ReLU(),
-                              help="generalized attention function to apply (if generalized attention)")
-        tf_parse.add_argument('--reversible', type=boolean, default=False,
-                              help="reversible layers, from Reformer paper")
-        tf_parse.add_argument('--ff_chunks', type=int, default=1,
-                              help="chunk feedforward layer, from Reformer paper")
-        tf_parse.add_argument('--use_scalenorm', type=boolean, default=False,
-                              help="use scale norm, from 'Transformers without Tears' paper")
-        tf_parse.add_argument('--use_rezero', type=boolean, default=False,
-                              help="use rezero, from 'Rezero is all you need' paper")
-        tf_parse.add_argument('--ff_glu', type=boolean, default=False,
-                              help="use GLU variant for feedforward")
-        tf_parse.add_argument('--emb_dropout', type=float, default=0.1,
-                              help="embedding dropout")
-        tf_parse.add_argument('--ff_dropout', type=float, default=0.1,
-                              help="feedforward dropout")
-        tf_parse.add_argument('--attn_dropout', type=float, default=0.1,
-                              help="post-attn dropout")
-        tf_parse.add_argument('--local_attn_heads', type=int, default=4,
-                              help="the amount of heads used for local attention")
-        tf_parse.add_argument('--local_window_size', type=int, default=256,
-                              help="window size of local attention")
-        tf_parse.add_argument('--debug', type=boolean, default=False,
-                              help="debug mode disables logging and checkpointing (only for train)")
-        tf_parse.add_argument('--patience', type=int, default=8,
-                              help="Number of epochs required without the validation loss reducing"
-                              "to stop training")
-        tf_parse.add_argument('--mask_frac', type=float, default=0.85,
-                              help="fraction of inputs that are masked, only for self-supervised training")
-        tf_parse.add_argument('--rand_frac', type=float, default=0.10,
-                              help="fraction of inputs that are randomized, only for self-supervised training")
-        tf_parse.add_argument('--metrics', type=str, nargs='*', default=['ROC', 'PR'], choices=['ROC', 'PR'],
-                              help="metrics calculated at the end of the epoch for the validation/test"
-                              "set. These bring a cost to memory")
-
-        tr_parse = parser.add_argument_group(
-            'Trainer', 'Pytorch-lightning Trainer arguments')
-        tr_parse.add_argument('--accelerator', type=str, default='cpu',
-                              choices=['cpu', 'gpu', 'tpu', 'ipu', 'hpu', 'mps', 'auto'], help="computational hardware to apply")
-        tr_parse.add_argument('--strategy', type=str, default='auto',
-                              help="strategy for multi-gpu computation")
-        tr_parse.add_argument('--devices', type=int,
-                              default=0, nargs='+', help="device to use")
-        tr_parse.add_argument('--max_epochs', type=int,
-                              default=60, help="maximum epochs of training")
-
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Transcript Transformer launch pad',
+        usage='''transcript_transformer <command> [<args>]
+            Commands:
+            data      process raw data for use with transcript-transformer
+            pretrain  Pretrain a model using self-supervised objective
+            train     Train a model to detect TIS locations on transcripts
+            predict   Predict TIS locations from input data
+        ''')
+    parser.add_argument('command', help='Subcommand to run')
+    args = parser.parse_args(sys.argv[1:2])
+    if args.command not in ['data', 'pretrain', 'train', 'predict']:
+        print('Unrecognized command')
+        parser.print_help()
+        exit(1)
+    # use dispatch pattern to invoke method with same name
+    if args.command =='data':
+        parser = Parser(description="Parse data in the h5 file")
+        parser.add_data_args()
         args = parser.parse_args(sys.argv[2:])
-        args = parse_json(args)
-        if mlm:
-            assert (not args.x_ribo) or (
-                not args.seq), "only one type of data supported for self-supervised objective"
-            assert not args.ribo_offset, "using a read length offset is not supported for self-supervised objective"
-            args.mlm = 'seq' if args.seq else 'ribo'
-        else:
-            args.mlm = None
-        args.num_tokens += 3  # add tokens used for data loading/padding
-        print(f"{'Self-' if mlm else ''}Supervised learning:\n----------\n {args}")
+        args = parse_config_file(args)
+        process_data(args)
+    elif args.command == 'pretrain':
+        parser = Parser(description="Pretrain transformer using MLM objective")
+        parser.add_train_loading_args()
+        parser.add_selfsupervised_args()
+        parser.add_training_args()
+        parser.add_comp_args()
+        parser.add_evaluation_args()
+        parser.add_architecture_args()
+        args = parser.parse_args(sys.argv[2:])
+        args = parse_config_file(args)
+        assert not (args.use_ribo and args.use_seq), "One input type allowed for self-supervised objective"
+        assert not args.ribo_offset, "ribo_offset not supported for MLM objective"
+        args.mlm = "seq" if args.use_seq else "ribo"
         train(args)
-
-    def predict(self):
-        parser = argparse.ArgumentParser(description='Predict TIS locations',
-                                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-        parser.add_argument('input_data', type=str, metavar='input_data',
-                            help='path to json/yaml dict (h5) or fasta file, or RNA sequence')
-        parser.add_argument('input_type', type=str, metavar='input_type',
-                            help="type of input", choices=['h5', 'fa', 'RNA'])
-        parser.add_argument('transfer_checkpoint', type=str, metavar='checkpoint',
-                            help="path to checkpoint of trained model")
-        parser.add_argument('--prob_th', type=float, default=0.01,
-                            help="minimum prediction threshold at which additional information is processed")
-        parser.add_argument('--save_path', type=str, metavar='save_path', default='results',
-                            help="save file path")
-        parser.add_argument('--output_type', type=str, default='npy', choices=['npy', 'h5'],
-                            help="file type of raw model predictions")
-
-        tr_parse = parser.add_argument_group(
-            'Trainer', 'Pytorch-lightning Trainer arguments')
-        tr_parse.add_argument('--accelerator', type=str, default='cpu',
-                              choices=['cpu', 'gpu', 'tpu', 'ipu', 'hpu', 'mps', 'auto'], help="computational hardware to apply")
-        tr_parse.add_argument('--strategy', type=str, default='auto',
-                              help="strategy for multi-gpu computation")
-        tr_parse.add_argument('--devices', type=str,
-                              default='auto', nargs='+', help="device to use")
-
-        dl_parse = parser.add_argument_group(
-            'DataLoader', 'data loader arguments (when loading from h5 file)')
-        dl_parse.add_argument('--test', type=str, nargs='+',
-                              help="contigs to predict on (h5 input format only)")
-        dl_parse.add_argument('--ribo_offset', type=boolean, default=False,
-                              help="offset mapped ribosome reads by read length")
-        dl_parse.add_argument('--min_seq_len', type=int, default=0,
-                              help="minimum sequence length of transcripts")
-        dl_parse.add_argument('--max_seq_len', type=int, default=50000,
-                              help="maximum sequence length of transcripts")
-        dl_parse.add_argument('--num_workers', type=int, default=12,
-                              help="number of data loader workers")
-        dl_parse.add_argument('--max_transcripts_per_batch', type=int, default=300,
-                              help="maximum of transcripts per batch")
-        dl_parse.add_argument('--max_memory', type=int, default=24000,
-                              help="MB value applied for bucket batches based on rough estimates")
-        dl_parse.add_argument('--metrics', type=str, nargs='*', default=['ROC', 'PR'], choices=['ROC', 'PR'],
-                              help="metrics calculated at the end of the epoch for the validation/test"
-                              "set. These bring a cost to memory")
-
+    elif args.command == 'train':
+        parser = Parser(description="Train a transformer using sequence or ribo-seq data")
+        parser.add_train_loading_args()
+        parser.add_training_args()
+        parser.add_comp_args()
+        parser.add_evaluation_args()
+        parser.add_architecture_args()
         args = parser.parse_args(sys.argv[2:])
-        if args.input_type == 'h5':
-            args = parse_json(args)
-
-        print('Imputing labels from trained model: {}'.format(args))
+        args = parse_config_file(args)
+        args.mlm, args.mask_frac, args.rand_frac = False, False, False
+        train(args)
+    else:
+        parser = Parser(description="Predict translation initiation sites")
+        parser.add_custom_data_args()
+        parser.add_predict_loading_args()
+        parser.add_comp_args()
+        parser.add_evaluation_args()
+        parser.add_preds_args()
+        args = parser.parse_args(sys.argv[2:])
+        if args.input_type == "config":
+            args = parse_config_file(args)
         predict(args)
 
-
-def train(args):
+def train(args, predict=False, enable_model_summary=True):
     if args.transfer_checkpoint:
-        trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, x_seq=args.seq, x_ribo=args.x_ribo,
+        trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, strict=False, use_seq=args.use_seq, use_ribo=args.use_ribo,
                                                                 lr=args.lr, decay_rate=args.decay_rate, warmup_step=args.warmup_steps,
                                                                 max_seq_len=args.max_seq_len, mlm=args.mlm, mask_frac=args.mask_frac,
                                                                 rand_frac=args.rand_frac)
     else:
-        trans_model = TranscriptSeqRiboEmb(args.seq, args.x_ribo, args.num_tokens, args.lr, args.decay_rate, args.warmup_steps,
+        trans_model = TranscriptSeqRiboEmb(args.use_seq, args.use_ribo, args.num_tokens, args.lr, args.decay_rate, args.warmup_steps,
                                            args.max_seq_len, args.dim, args.depth, args.heads, args.dim_head, False, args.nb_features,
-                                           args.feature_redraw_interval, args.generalized_attention, args.kernel_fn,
+                                           args.feature_redraw_interval, args.generalized_attention, torch.nn.ReLU(),
                                            args.reversible, args.ff_chunks, args.use_scalenorm, args.use_rezero, False,
                                            args.ff_glu, args.emb_dropout, args.ff_dropout, args.attn_dropout,
                                            args.local_attn_heads, args.local_window_size, args.mlm, args.mask_frac, args.rand_frac, args.metrics)
 
-    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset,
-                               args.id_path, args.contig_path, args.merge_dict, train=args.train, val=args.val, test=args.test, max_memory=args.max_memory,
+    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.y_path, args.id_path, args.contig_path, args.use_seq, args.ribo_ids, args.ribo_shifts,
+                               args.ribo_offset, args.merge_dict, train=args.train, val=args.val, test=args.test, max_memory=args.max_memory,
                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len,
                                num_workers=args.num_workers, cond_fs=args.cond, leaky_frac=args.leaky_frac, collate_fn=collate_fn)
-    checkpoint_callback = ModelCheckpoint(monitor="val_loss",
-                                          filename="{epoch:02d}_{val_loss:.2f}", save_top_k=1, mode="min")
-    tb_logger = pl.loggers.TensorBoardLogger(
-        '.', os.path.join(args.log_dir, args.name))
+    checkpoint_callback = ModelCheckpoint(monitor="val_loss", filename="{epoch:02d}_{val_loss:.2f}", save_top_k=1, mode="min")
+    tb_logger = pl.loggers.TensorBoardLogger('.', os.path.join(args.log_dir, args.name))
     if args.debug:
-        trainer = pl.Trainer(args.accelerator, args.strategy, args.devices, max_epochs=args.max_epochs, reload_dataloaders_every_n_epochs=1,
-                             callbacks=[EarlyStopping(
-                                 monitor="val_loss", mode="min", patience=args.patience)],
+        trainer = pl.Trainer(args.accelerator, args.strategy, args.devices, max_epochs=args.max_epochs, 
+                             reload_dataloaders_every_n_epochs=1, enable_model_summary=enable_model_summary,
+                             callbacks=[EarlyStopping(monitor="val_loss", mode="min", patience=args.patience)],
                              enable_checkpointing=False, logger=False)
     else:
         trainer = pl.Trainer(args.accelerator, args.strategy, args.devices, max_epochs=args.max_epochs, reload_dataloaders_every_n_epochs=1,
-                             callbacks=[checkpoint_callback, EarlyStopping(
-                                 monitor="val_loss", mode="min", patience=args.patience)],
+                             enable_model_summary=enable_model_summary, 
+                             callbacks=[checkpoint_callback, EarlyStopping(monitor="val_loss", mode="min", patience=args.patience)],
                              logger=tb_logger)
     trainer.fit(trans_model, datamodule=tr_loader)
-    print(trainer.checkpoint_callbacks)
-    trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
+    if not predict:
+        print(trainer.checkpoint_callbacks)
+        trainer.test(trans_model, datamodule=tr_loader, ckpt_path='best')
+    else:
+         return trainer.predict(trans_model, dataloaders=tr_loader, ckpt_path='best')
 
 
 def predict(args):
@@ -363,10 +181,9 @@ def predict(args):
                          args.devices, enable_checkpointing=False, logger=None)
     trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, map_location=map_location, strict=False, max_seq_len=args.max_seq_len,
                                                             mlm=False, mask_frac=0.85, rand_frac=0.15, metrics=[])
-    if args.input_type == 'h5':
-        args = parse_json(args)
-        tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.ribo, args.y_path, args.seq, args.ribo_offset,
-                                   args.id_path, args.contig_path, args.merge_dict, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
+    if args.input_type == 'config':
+        tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.y_path, args.id_path, args.contig_path, args.use_seq, args.ribo_ids, args.ribo_shifts, 
+                                   args.ribo_offset, args.merge_dict, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
                                    min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, num_workers=args.num_workers, collate_fn=collate_fn)
     else:
         if args.input_type == 'RNA':
@@ -423,14 +240,15 @@ def process_results(mask, ids, preds, seqs):
         for idx in idxs:
             prot_seq, has_stop = construct_prot(tr[idx:])
             TTS_pos = idx+len(prot_seq)*3
-            df.loc[num] = [ids[i][0], len(tr), idx+1, preds[i][idx], tr[idx:idx+3], TTS_pos, tr[TTS_pos:TTS_pos+3],
+            df.loc[num] = [ids[i][0],len(tr), idx+1, preds[i][idx], 
+                           tr[idx:idx+3], TTS_pos, tr[TTS_pos:TTS_pos+3],
                            has_stop, len(prot_seq), prot_seq]
             num += 1
     return df
 
 
 def main():
-    args = ParseArgs()
+    args = parse_args()
 
 
 if __name__ == "__main__":
