@@ -22,15 +22,20 @@ class Parser(argparse.ArgumentParser):
     def add_data_args(self):
         input_parse = self.add_argument_group("Data processing arguments")
         input_parse.add_argument(
-            "--meta_dir",
-            type=str,
-            default=None,
-            help="dir in which metadata is stored, defaults to GTF folder",
-        )
-        input_parse.add_argument(
             "--overwrite",
             action="store_true",
             help="overwrite ribo-seq data when id is already present in h5 file",
+        )
+        input_parse.add_argument(
+            "--no_backup",
+            action="store_false",
+            help="Do not create a backup of the processed assembly in the GTF folder location",
+        )
+        input_parse.add_argument(
+            "--backup_path",
+            type=str,
+            default=None,
+            help="path to backup location (defaults to GTF folder location)",
         )
         input_parse.add_argument(
             "--low_memory",

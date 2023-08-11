@@ -170,7 +170,7 @@ def train(args, predict=False, enable_model_summary=True):
     else:
          return trainer.predict(trans_model, dataloaders=tr_loader, ckpt_path='best')
 
-
+# TODO predict function needs refacturing and cleanup, better integration with custom riboformer scripts
 def predict(args):
     if args.accelerator == 'cpu':
         map_location=torch.device('cpu')
