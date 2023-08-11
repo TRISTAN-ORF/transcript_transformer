@@ -91,13 +91,13 @@ def parse_args():
         exit(1)
     # use dispatch pattern to invoke method with same name
     if args.command =='data':
-        parser = Parser(description="Parse data in the h5 file")
+        parser = Parser(stage='data', description="Parse data in the h5 file")
         parser.add_data_args()
         args = parser.parse_args(sys.argv[2:])
         args = parse_config_file(args)
         process_data(args)
     elif args.command == 'pretrain':
-        parser = Parser(description="Pretrain transformer using MLM objective")
+        parser = Parser(stage='train', description="Pretrain transformer using MLM objective")
         parser.add_train_loading_args()
         parser.add_selfsupervised_args()
         parser.add_training_args()
@@ -111,7 +111,7 @@ def parse_args():
         args.mlm = "seq" if args.use_seq else "ribo"
         train(args)
     elif args.command == 'train':
-        parser = Parser(description="Train a transformer using sequence or ribo-seq data")
+        parser = Parser(stage='train', description="Train a transformer using sequence or ribo-seq data")
         parser.add_train_loading_args()
         parser.add_training_args()
         parser.add_comp_args()
@@ -122,7 +122,7 @@ def parse_args():
         args.mlm, args.mask_frac, args.rand_frac = False, False, False
         train(args)
     else:
-        parser = Parser(description="Predict translation initiation sites")
+        parser = Parser(stage='predict', description="Predict translation initiation sites")
         parser.add_custom_data_args()
         parser.add_predict_loading_args()
         parser.add_comp_args()
