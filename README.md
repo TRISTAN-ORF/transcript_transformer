@@ -10,7 +10,7 @@ Deep learning utility functions for processing and annotating transcript genome 
 </div>
 
 
-`transcript_transformer`  is constructed in concordance with the creation of TIS Transformer, ([paper](https://doi.org/10.1093/nargab/lqad021), [repository](https://github.com/jdcla/TIS_transformer)) and RIBO-former ([paper](https://doi.org/10.1101/2023.06.20.545724), [repository paper](https://github.com/jdcla/RIBO_former_paper), [repository tool](https://github.com/jdcla/RIBO_former)). `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes applies `h5py` for data loading and `pytorch-lightning` as a high-level interface for training and evaluation of deep learning models. `transcript_transformer` is designed to allow a high degree of modularity, but has not been tested for every combination of arguments, and can therefore return errors. For a more targeted and streamlined explanation on how to apply TIS transformer or RIBO-former, please refer to their repositories.
+`transcript_transformer`  is constructed in concordance with the creation of TIS Transformer, ([paper](https://doi.org/10.1093/nargab/lqad021), [repository](https://github.com/jdcla/TIS_transformer)) and RIBO-former ([paper](https://doi.org/10.1101/2023.06.20.545724), [repository paper](https://github.com/jdcla/RIBO_former_paper), [repository tool](https://github.com/jdcla/RIBO_former)). `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package applies `h5py` for data loading and `pytorch-lightning` as a high-level interface for training and evaluation of deep learning models. `transcript_transformer` is designed to allow a high degree of modularity, but has not been tested for every combination of arguments, and can therefore return errors. For a more targeted and streamlined explanation on how to apply TIS transformer or RIBO-former, please refer to their repositories.
 
 ## 🔗 Installation
 `pytorch` needs to be separately [installed by the user](https://pytorch.org/get-started/locally/). 
@@ -58,9 +58,9 @@ Ribosome profiling data is saved by reads mapped to each transcript position. Ma
 
 ### data
 
-`transcript_transformer data` is used to process the transcriptome of a given assembly to make it readily available for data loading. Dictionary `.yml`/`.json` files are used to specify the application of data to the models. After processing, given dictionary files can still be altered to define what data is used for a specific run. As such, for a given assembly, it is possible to store all available data in a single database. New ribosome profiling experiments can be added to an existing database by running `transcript_transformer data` again after update the config file.
+`transcript_transformer data` is used to process the transcriptome of a given assembly to make it readily available for data loading. [Dictionary `.yml`/`.json`](https://github.com/jdcla/transcript_transformer/blob/main/template.yml) files are used to specify the application of data to the models. After processing, given dictionary files can still be altered to define what data is used for a specific run. As such, for a given assembly, it is possible to store all available data in a single database. New ribosome profiling experiments can be added to an existing database by running `transcript_transformer data` again after updating the config file.
 
-The following command can be used to parse data by running 
+The following command can be used to parse data by running:
 ```bash
 transcript_transformer data template.yml
 ```
@@ -96,7 +96,7 @@ seq : false
 
 ```
 
-Several other options exist that specify how ribosome profiling data is loaded. More information on each option is present in the yaml file. 
+Several other options exist that specify how ribosome profiling data is loaded. Refer to [`template.yml`](https://github.com/jdcla/transcript_transformer/blob/main/template.yml), available in the root directory of this repository, for more information on each option. 
 
 ### pretrain
 
