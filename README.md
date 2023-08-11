@@ -10,7 +10,7 @@ Deep learning utility functions for processing and annotating transcript genome 
 </div>
 
 
-`transcript_transformer`  is constructed in concordance with the creation of TIS Transformer, ([paper](https://doi.org/10.1093/nargab/lqad021), [repository](https://github.com/jdcla/TIS_transformer)) and RIBO-former (to be released). `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes use of `h5py` for data loading and `pytorch-lightning` as a high-level interface for training and evaluation for deep learning models. `transcript_transformer` is designed to allow a high degree of modularity, but has not been tested for every combination of arguments, and can therefore return errors.
+`transcript_transformer`  is constructed in concordance with the creation of TIS Transformer, ([paper](https://doi.org/10.1093/nargab/lqad021), [repository](https://github.com/jdcla/TIS_transformer)) and RIBO-former ([paper](https://doi.org/10.1101/2023.06.20.545724), [repository paper](https://github.com/jdcla/RIBO_former_paper), [repository tool](https://github.com/jdcla/RIBO_former)). `transcript_transformer` makes use of the [Performer](https://arxiv.org/abs/2009.14794) architecture to allow for the annotations and processing of transcripts at single nucleotide resolution. The package makes applies `h5py` for data loading and `pytorch-lightning` as a high-level interface for training and evaluation of deep learning models. `transcript_transformer` is designed to allow a high degree of modularity, but has not been tested for every combination of arguments, and can therefore return errors. For a more targeted and streamlined explanation on how to apply TIS transformer or RIBO-former, please refer to their repositories.
 
 ## 🔗 Installation
 `pytorch` needs to be separately [installed by the user](https://pytorch.org/get-started/locally/). 
@@ -22,7 +22,7 @@ pip install transcript-transformer
 
 ## 📖 User guide <a name="code"></a>
 
-The library features a tool that can be called directly by the command `transcript_transformer`, featuring three main functions: `pretrain`, `train` and `predict`. Data loading is achieved using the `h5` format, handled by the `h5py` package. A introductary explanation on how to apply models for predicting TIS using sequence information or ribosome profiling data, please refer to the respective repositories of [TIS Transformer](https://github.com/jdcla/TIS_transformer) and RIBO-former (Soon).
+The library features a tool that can be called directly by the command `transcript_transformer`, featuring four main functions: `data`, `pretrain`, `train` and `predict`.  
 
 ### Data loading
 Information is separated by transcript and information type. Information belonging to a single transcript is mapped according to the index they populate within each `h5py.dataset`, used to store different types of information. [Variable length arrays](https://docs.h5py.org/en/stable/special.html#arbitrary-vlen-data) are used to store the sequences and annotations of all transcripts under a single data set. 
@@ -55,115 +55,76 @@ Ribosome profiling data is saved by reads mapped to each transcript position. Ma
 <img src="https://github.com/jdcla/h5max/raw/main/h5max.png" width="600">
 </div>
 
-Dictionary `.json` files are used to specify the application of data to `transcript_transformer`. When no sequence information or ribosome profiling data is used, either entry `seq` or `ribo` is set to `false`. For each ribosome profiling dataset, custom [P-site offsets](https://plastid.readthedocs.io/en/latest/glossary.html#term-P-site-offset) can be set per read length. 
 
-```json
-{
-  "h5_path":"data.h5",
-  "exp_path":"transcript",
-  "y_path":"tis",
-  "chrom_path":"contig",
-  "id_path":"id",
-  "seq":"seq",
-  "ribo": {
-    "SRR000001/5": {
-      "25": 7,
-      "26": 7,
-      "27": 8,
-      "28": 10,
-      "29": 10,
-      "30": 11,
-      "31": 11,
-      "32": 7,
-      "33": 7,
-      "34": 9,
-      "35": 9,
-    }
-  }
-}
+### data
+
+`transcript_transformer data` is used to process the transcriptome of a given assembly to make it readily available for data loading. Dictionary `.yml`/`.json` files are used to specify the application of data to the models. After processing, given dictionary files can still be altered to define what data is used for a specific run. As such, for a given assembly, it is possible to store all available data in a single database. New ribosome profiling experiments can be added to an existing database by running `transcript_transformer data` again after update the config file.
+
+The following command can be used to parse data by running 
+```bash
+transcript_transformer data template.yml
+```
+where `template.yml` is:
+```yaml
+gtf_path : path/to/gtf_file.gtf
+fa_path : path/to/fa_file.fa
+########################################################
+## add entries when using ribosome profiling data.
+## format: 'id : ribosome profiling paths'
+## leave empty for sequence input models (TIS transformer)
+## DO NOT change id after data is parsed to h5 file
+########################################################
+ribo_paths :
+  SRR000001 : ribo/SRR000001.sam
+  SRR000002 : ribo/SRR000002.sam
+  SRR000003 : ribo/SRR000003.sam
+########################################################
+## Data is parsed and stored in a hdf5 format file.
+########################################################
+h5_path : my_experiment.h5
 ```
 
+When applying a model it is required to specify whether sequence information is used (e.g. for TIS transformer).
 
+```yaml
+########################################################
+## For models using transcript sequence data.
+## This setting is used by the TIS-transformer.
+## Set to false when training on ribo-seq data
+########################################################
+seq : false
+
+```
+
+Several other options exist that specify how ribosome profiling data is loaded. More information on each option is present in the yaml file. 
 
 ### pretrain
 
-Conform with transformers trained for natural language processing objectives, models can first be trained following a self-supervised learning objective. Using a masked language modelling approach, models are tasked to predict the classes of the masked input tokens. As such, a model is trained the 'semantics' of transcript sequences. The approach is similar to the one described by [Zaheer et al. ](https://arxiv.org/abs/2007.14062). This approach has not been using ribosome profiling data.
+Conform with transformers trained for natural language processing objectives, models can first be trained following a self-supervised learning objective. Using a masked language modelling approach, models are tasked to predict the classes of the masked input tokens. As such, a model is trained the 'semantics' of transcript sequences. The approach is similar to the one described by [Zaheer et al. ](https://arxiv.org/abs/2007.14062).
 
-
-```
-transcript_transformer pretrain -h
-
-positional arguments:
-  dict_path             dictionary (json/yaml) path containing input data file info
-
-options:
-  -h, --help            show this help message and exit
-  --train str [str ...]
-                        contigs in data_path folder used for training. If not specified, training is performed on all available contigs excluding val/test contigs (default: None)
-  --val str [str ...]   contigs in data_path folder used for validation (default: None)
-  --test str [str ...]  contigs in data_path folder used for testing (default: None)
-  --ribo_offset boolean
-                        offset mapped ribosome reads by read length (default: False)
-  --name str            name of the model (default: )
-  --log_dir str         log dir (default: lightning_logs)
-```
 
 Example
 
 ```
-transcript_transformer pretrain input_data.json --val 1 13 --test 2 14 --max_epochs 70 --gpu 1 
+transcript_transformer pretrain input_data.yml --val 1 13 --test 2 14 --max_epochs 70 --accelerator gpu --devices 1
 ```
 
 </details>
 
 ### train
-The package supports training the models architectures listed under `transcript_transformer/models.py`. The function expects a `.json` file containing the input data info (see [data loading](https://github.com/jdcla/transcript_transformer#data-loading)). It is possible to start training upon pre-trained models using the `--transfer_checkpoint` functionality.
+The package supports training the models architectures listed under `transcript_transformer/models.py`. The function expects the configuration file containing the input data info (see [data loading](https://github.com/jdcla/transcript_transformer#data)). Use the `--transfer_checkpoint` flag to start training upon pre-trained models.
 
 
-```
-transcript_transformer train -h
-    
-positional arguments:
-  dict_path             dictionary (json/yaml) path containing input data file info
-
-options:
-  -h, --help            show this help message and exit
-  --train str [str ...]
-                        contigs in data_path folder used for training. If not specified, training is performed on all available contigs excluding val/test contigs (default: None)
-  --val str [str ...]   contigs in data_path folder used for validation (default: None)
-  --test str [str ...]  contigs in data_path folder used for testing (default: None)
-  --ribo_offset boolean
-                        offset mapped ribosome reads by read length (default: False)
-  --name str            name of the model (default: )
-  --log_dir str         log dir (default: lightning_logs)
-```
 
 Example
 
 ```
-transcript_transformer train input_data.json --val 1 13 --test 2 14 --max_epochs 70 --transfer_checkpoint lightning_logs/mlm_model/version_0/ --name experiment_1 --gpu 1 
+transcript_transformer train input_data.yml --val 1 13 --test 2 14 --max_epochs 70 --transfer_checkpoint lightning_logs/mlm_model/version_0/ --name experiment_1 --accelerator gpu --devices 1
 ```
 
 ### predict
 
 The predict function returns probabilities for all nucleotide positions on the transcript and can be saved using the `.npy` or `.h5` format. In addition to reading from `.h5` files, the function supports the use of a single RNA sequence as input or a path to a `.fa` file. Note that `.fa` and `.npy` formats are only supported for models that only apply transcript nucleotide information.
-
-```
-transcript_transformer predict -h
-
-positional arguments:
-  input_data            path to json/yaml dict (h5) or fasta file, or RNA sequence
-  input_type            type of input
-  checkpoint            path to checkpoint of trained model
-
-options:
-  -h, --help            show this help message and exit
-  --prob_th PROB_TH     minimum prediction threshold at which additional information is processed (default: 0.01)
-  --save_path save_path
-                        save file path (default: results)
-  --output_type {npy,h5}
-                        file type of raw model predictions (default: npy)
-```
 
 
 Example
@@ -194,87 +155,21 @@ array(['>ENST00000410304',
 ```
 
 ### Other function flags
-Various other function flags dictate the properties of the dataloader, model architecture and training procedure.
+Various other function flags dictate the properties of the dataloader, model architecture and training procedure. Check them out 
 
-<details><summary>Pytorch lightning trainer</summary>
-
-```
-pl.Trainer:
-  --accelerator {cpu,gpu,tpu,ipu,hpu,mps,auto}
-                        computational hardware to apply (default: cpu)
-  --strategy str        strategy for multi-gpu computation (default: auto)
-  --devices int [int ...]
-                        device to use (default: 0)
-  --max_epochs int      maximum epochs of training (default: 60)
-
+```bash
+transcript_transformer data -h 
+transcript_transformer pretrain -h 
+transcript_transformer data -h
+transcript_transformer predict -h 
 ```
 
-</details>
-
-<details><summary>Dataloader</summary>
-
-```
-data loader arguments
-
-  --min_seq_len int     minimum sequence length of transcripts (default: 0)
-  --max_seq_len int     maximum sequence length of transcripts (default: 30000)
-  --leaky_frac float    fraction of samples that escape conditions (ribo-seq) (default: 0.05)
-  --num_workers int     number of data loader workers (default: 12)
-  --max_memory int      MB value applied for bucket batches based on rough estimates (default: 24000)
-  --max_transcripts_per_batch int
-                        maximum of transcripts per batch (default: 2000)
-```
-
-</details>
-
-<details><summary>Model architecture</summary>
-
-```
-Model:
-  Transformer arguments
-
-  --transfer_checkpoint str
-                        Path to checkpoint pretrained model (default: None)
-  --lr float            learning rate (default: 0.001)
-  --decay_rate float    multiplicatively decays learning rate for every epoch (default: 0.96)
-  --warmup_steps int    number of warmup steps at the start of training (default: 1500)
-  --num_tokens int      number of unique nucleotide input tokens (default: 5)
-  --dim int             dimension of the hidden states (default: 30)
-  --depth int           number of layers (default: 6)
-  --heads int           number of attention heads in every layer (default: 6)
-  --dim_head int        dimension of the attention head matrices (default: 16)
-  --nb_features int     number of random features, if not set, will default to (d * log(d)), where d is the dimension of each head (default: 80)
-  --feature_redraw_interval int
-                        how frequently to redraw the projection matrix (default: 1000)
-  --generalized_attention boolean
-                        applies generalized attention functions (default: True)
-  --kernel_fn boolean   generalized attention function to apply (if generalized attention) (default: ReLU())
-  --reversible boolean  reversible layers, from Reformer paper (default: False)
-  --ff_chunks int       chunk feedforward layer, from Reformer paper (default: 1)
-  --use_scalenorm boolean
-                        use scale norm, from 'Transformers without Tears' paper (default: False)
-  --use_rezero boolean  use rezero, from 'Rezero is all you need' paper (default: False)
-  --ff_glu boolean      use GLU variant for feedforward (default: False)
-  --emb_dropout float   embedding dropout (default: 0.1)
-  --ff_dropout float    feedforward dropout (default: 0.1)
-  --attn_dropout float  post-attn dropout (default: 0.1)
-  --local_attn_heads int
-                        the amount of heads used for local attention (default: 4)
-  --local_window_size int
-                        window size of local attention (default: 256)
-  --debug boolean       debug mode disables logging and checkpointing (only for train) (default: False)
-  --patience int        Number of epochs required without the validation loss reducingto stop training (default: 8)
-  --mask_frac float     fraction of inputs that are masked, only for self-supervised training (default: 0.85)
-  --rand_frac float     fraction of inputs that are randomized, only for self-supervised training (default: 0.1)
-  --metrics [{ROC,PR} ...]
-                        metrics calculated at the end of the epoch for the validation/testset. These bring a cost to memory (default: ['ROC', 'PR'])
-```
 
 </details>
 
 ## ✔️ Package features
 
-- [ ] creation of `h5` file from genome assemblies and ribosome profiling datasets
+- [x] creation of `h5` file from genome assemblies and ribosome profiling datasets
 - [x] bucket sampling
 - [x] pre-training functionality
 - [x] data loading for sequence and ribosome data
@@ -282,6 +177,7 @@ Model:
 - [ ] function hooks for custom data loading and pre-processing
 - [x] model architectures
 - [x] application of trained networks
+- [ ] post-processing
 - [ ] test scripts
 
 ## 🖊️ Citation <a name="citation"></a>
