@@ -190,7 +190,6 @@ def parse_transcriptome(f, gtf_path, fa_path):
             data_dict["exon_coords"].append(np.array(exon_coords))
             data_dict['seq'].append(np.concatenate(exon_seqs))
             data_dict['tis'].append(target_seq)
-            data_dict['id'].append(id)
             data_dict['contig'].append(contig)
 
     print("Save data in hdf5 files...")
