@@ -187,7 +187,6 @@ class h5pyDataModule(pl.LightningDataModule):
         has_val_seqns = len(self.seqns["val"]) > 0
         has_test_seqns = len(self.seqns["test"]) > 0
         if (not has_train_seqns) or (not has_val_seqns) or (not has_test_seqns):
-            print(has_train_seqns, has_val_seqns, has_test_seqns)
             filled_sets = sum([has_train_seqns, has_val_seqns, has_test_seqns])
             assert filled_sets == 2, "only one set (train/test/val) can be left empty"
             seqns = np.unique(self.fh[self.seqn_path]).astype(str)
