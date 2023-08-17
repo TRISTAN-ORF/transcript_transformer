@@ -45,7 +45,7 @@ class Parser(argparse.ArgumentParser):
         input_parse.add_argument(
             "--cores",
             type=int,
-            default=12,
+            default=8,
             help="number of processor cores used for data processing",
         )
 
