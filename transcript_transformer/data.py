@@ -335,6 +335,6 @@ def parse_ribo_reads(df, read_lens, tr_ids, tr_lens):
         tr_reads = np.zeros((num_read_lens, tr_lens[mask_tr][0]), dtype=np.uint32)
         for row in group.rows():
             tr_reads[read_len_dict[row[3]], row[1] - 1] += 1
-        riboseq_data[mask_tr] = sparse.csr_matrix(tr_reads)
+        riboseq_data[mask_tr] = sparse.csr_matrix(tr_reads, dtype=int)
 
     return riboseq_data
