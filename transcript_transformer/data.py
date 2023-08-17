@@ -1,4 +1,6 @@
 import os
+import traceback
+import logging
 import shutil
 import numpy as np
 
@@ -11,6 +13,7 @@ import h5py
 import h5max
 import pyfaidx
 from gtfparse import read_gtf
+
 
 def co_to_idx(start, end):
     return start - 1, end
@@ -51,7 +54,7 @@ def process_data(args):
         print(f"Processed assembly data restored ({args.backup_path})")
         shutil.copy(args.backup_path, args.h5_path)
         pulled = True
-     
+
     f = h5py.File(args.h5_path, "a")
     if "transcript" in f.keys():
         print(
@@ -60,8 +63,13 @@ def process_data(args):
         )
     else:
         f.create_group("transcript")
-        f = parse_transcriptome(f, args.gtf_path, args.fa_path)
-        if args.backup and not pulled:
+        try:
+            f = parse_transcriptome(f, args.gtf_path, args.fa_path)
+        except Exception as e:
+            logging.error(traceback.format_exc())
+            f.close()
+            os.remove(args.h5_path)
+        if not args.no_backup and not pulled:
             f.close()
             shutil.copy(args.h5_path, args.backup_path)
             f = h5py.File(args.h5_path, "a")
@@ -74,6 +82,7 @@ def process_data(args):
         )
     f.close()
 
+
 # add canonical TIS, canonical TTS
 def parse_transcriptome(f, gtf_path, fa_path):
     print("Loading assembly data...")
@@ -81,38 +90,73 @@ def parse_transcriptome(f, gtf_path, fa_path):
     contig_list = pd.Series(genome.keys())
     gtf = read_gtf(gtf_path)
     gtf = gtf.with_columns(pl.col("exon_number").cast(pl.Int32, strict=False))
-    headers = {"transcript_id":"id", "gene_id": "gene_id", "gene_name": "gene_name", 
-               "strand": "strand", "transcript_biotype": "biotype", "tag": "tag", 
-               "transcript_support_level": "support_lvl"}
-    
+    headers = {
+        "transcript_id": "id",
+        "gene_id": "gene_id",
+        "gene_name": "gene_name",
+        "strand": "strand",
+        "transcript_biotype": "biotype",
+        "tag": "tag",
+        "transcript_support_level": "support_lvl",
+    }
+
     print("Extracting transcripts and metadata...")
-    data_dict = {"id": [], "seq": [], "tis": [], "gene_id": [], "gene_name": [], "contig": [],
-                    "strand": [], "biotype": [], "tag": [], "support_lvl": [], "canonical_TIS_exon_idx": [],
-                    "exon_idxs": [], "exon_coords": [], "canonical_TIS_idx": [], "canonical_TIS_coord": [], 
-                    "canonical_TTS_idx": [], "canonical_TTS_coord": [], "tr_len": [], "canonical_prot_id": []}
+    data_dict = {
+        "id": [],
+        "seq": [],
+        "tis": [],
+        "gene_id": [],
+        "gene_name": [],
+        "contig": [],
+        "strand": [],
+        "biotype": [],
+        "tag": [],
+        "support_lvl": [],
+        "canonical_TIS_exon_idx": [],
+        "exon_idxs": [],
+        "exon_coords": [],
+        "canonical_TIS_idx": [],
+        "canonical_TIS_coord": [],
+        "canonical_TTS_idx": [],
+        "canonical_TTS_coord": [],
+        "tr_len": [],
+        "canonical_prot_id": [],
+    }
+    assert "transcript_id" in gtf.columns, "transcript_id column missing in gtf file"
+    assert "strand" in gtf.columns, "strand column missing in gtf file"
+    for key, _ in headers.items():
+        if key not in gtf.columns:
+            gtf = gtf.with_columns(pl.lit(None).alias(key))
+
     for contig in contig_list:
         print(f"{contig}...")
         gtf_set = gtf.filter(pl.col("seqname") == str(contig))
         tr_set = gtf_set["transcript_id"].unique()
         tr_set = tr_set.filter(tr_set != "")
-
         for i, id in tqdm(enumerate(tr_set), total=len(tr_set)):
             # obtain transcript information
             gtf_tr = gtf_set.filter(pl.col("transcript_id") == id).sort(
                 by="exon_number"
             )
             keys, values = (
-                gtf_tr.filter(pl.col("feature") == "transcript")
-                .select(list(headers.keys()))).melt().to_dict().values()
+                (
+                    gtf_tr.filter(pl.col("feature") == "transcript").select(
+                        list(headers.keys())
+                    )
+                )
+                .melt()
+                .to_dict()
+                .values()
+            )
             for k, i in zip(list(headers.values()), values):
                 data_dict[k].append(i)
-                
+
             # obtain and sort exon information (strings have wrong sortin (e.g. 10, 11, 2, 3, ...))
             exons = gtf_tr.filter(pl.col("feature") == "exon")
             exon_lens = (abs(exons["start"] - exons["end"]) + 1).to_numpy()
             strand_is_pos = (exons["strand"] == "+").any()
             cum_exon_lens = np.insert(np.cumsum(exon_lens), 0, 0)
-            data_dict['tr_len'].append(exon_lens.sum())
+            data_dict["tr_len"].append(exon_lens.sum())
 
             if len(exons) == 0:
                 print(
@@ -152,7 +196,6 @@ def parse_transcriptome(f, gtf_path, fa_path):
                     else:
                         tts = exons[-1].to_dicts()[0]["start"]
 
-
                 target_seq[tis_idx] = 1
                 data_dict["canonical_TIS_exon_idx"].append(exon_i)
                 data_dict["canonical_TIS_idx"].append(tis_idx)
@@ -180,26 +223,37 @@ def parse_transcriptome(f, gtf_path, fa_path):
                     exon["strand"],
                     to_vec=True,
                 ).astype(np.int16)
-                
+
                 exon_coords.append(exon["start"])
                 exon_coords.append(exon["end"])
                 exon_seqs.append(exon_seq)
-            
+
             exon_idxs = np.vstack((cum_exon_lens[:-1], cum_exon_lens[1:])).T.ravel()
-            data_dict['exon_idxs'].append(exon_idxs)
+            data_dict["exon_idxs"].append(exon_idxs)
             data_dict["exon_coords"].append(np.array(exon_coords))
-            data_dict['seq'].append(np.concatenate(exon_seqs))
-            data_dict['tis'].append(target_seq)
-            data_dict['contig'].append(contig)
+            data_dict["seq"].append(np.concatenate(exon_seqs))
+            data_dict["tis"].append(target_seq)
+            data_dict["contig"].append(contig)
 
     print("Save data in hdf5 files...")
     dt8 = h5py.vlen_dtype(np.dtype("int8"))
     dt = h5py.vlen_dtype(np.dtype("int"))
     grp = f["transcript"]
     for key, array in data_dict.items():
-        if key in ["id", "contig", "gene_id", "gene_name", "strand", 
-                   "biotype", "tag", "support_lvl", "canonical_prot_id"]:
-            grp.create_dataset(key, data=array, dtype=f"<S{max([len(s) for s in array])}")
+        if key in [
+            "id",
+            "contig",
+            "gene_id",
+            "gene_name",
+            "strand",
+            "biotype",
+            "tag",
+            "support_lvl",
+            "canonical_prot_id",
+        ]:
+            grp.create_dataset(
+                key, data=array, dtype=f"<S{max([len(s) for s in array])}"
+            )
         elif key in ["seq", "tis"]:
             grp.create_dataset(key, data=array, dtype=dt8)
         elif key in ["exon_idxs", "exon_coords"]:
@@ -284,14 +338,3 @@ def parse_ribo_reads(df, read_lens, tr_ids, tr_lens):
         riboseq_data[mask_tr] = sparse.csr_matrix(tr_reads)
 
     return riboseq_data
-
-
-if __name__ == "__main__":
-    f = h5py.File("../test/test.h5", "w")
-    f.create_group("transcript")
-    parse_transcriptome(
-        f,
-        "../test/data/GRCh38v107_snippet.gtf",
-        "../test/data/GRCh38_snippet.fa",
-    )
-    f.close()
