@@ -147,7 +147,7 @@ def train(args, predict=False, enable_model_summary=True):
                                            args.ff_glu, args.emb_dropout, args.ff_dropout, args.attn_dropout,
                                            args.local_attn_heads, args.local_window_size, args.mlm, args.mask_frac, args.rand_frac, args.metrics)
 
-    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.y_path, args.id_path, args.contig_path, args.use_seq, args.ribo_ids, args.ribo_shifts,
+    tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.y_path, args.id_path, args.seqn_path, args.use_seq, args.ribo_ids, args.ribo_shifts,
                                args.ribo_offset, args.merge_dict, train=args.train, val=args.val, test=args.test, max_memory=args.max_memory,
                                max_transcripts_per_batch=args.max_transcripts_per_batch, min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len,
                                num_workers=args.num_workers, cond_fs=args.cond, leaky_frac=args.leaky_frac, collate_fn=collate_fn)
@@ -182,7 +182,7 @@ def predict(args):
     trans_model = TranscriptSeqRiboEmb.load_from_checkpoint(args.transfer_checkpoint, map_location=map_location, strict=False, max_seq_len=args.max_seq_len,
                                                             mlm=False, mask_frac=0.85, rand_frac=0.15, metrics=[])
     if args.input_type == 'config':
-        tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.y_path, args.id_path, args.contig_path, args.use_seq, args.ribo_ids, args.ribo_shifts, 
+        tr_loader = h5pyDataModule(args.h5_path, args.exp_path, args.y_path, args.id_path, args.seqn_path, args.use_seq, args.ribo_ids, args.ribo_shifts, 
                                    args.ribo_offset, args.merge_dict, test=args.test, max_memory=args.max_memory, max_transcripts_per_batch=args.max_transcripts_per_batch,
                                    min_seq_len=args.min_seq_len, max_seq_len=args.max_seq_len, num_workers=args.num_workers, collate_fn=collate_fn)
     else:

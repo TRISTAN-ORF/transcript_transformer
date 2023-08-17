@@ -177,6 +177,7 @@ class Parser(argparse.ArgumentParser):
             "--test",
             type=str,
             nargs="*",
+            default=[],
             help="chromosomes from h5 database to predict on",
         )
         dl_parse.add_argument(
@@ -209,20 +210,23 @@ class Parser(argparse.ArgumentParser):
             dl_parse.add_argument(
                 "--train",
                 type=str,
-                nargs="+",
+                nargs="*",
+                default=[],
                 help="chromosomes used for training. If not specified, "
                 "training is performed on all available chromosomes excluding val/test contigs",
             )
             dl_parse.add_argument(
                 "--val",
                 type=str,
-                nargs="+",
+                nargs="*",
+                default=[],
                 help="chromosomes used for validation",
             )
             dl_parse.add_argument(
                 "--test",
                 type=str,
-                nargs="+",
+                nargs="*",
+                default=[],
                 help="chromosomes used for testing",
             )
         dl_parse.add_argument(
@@ -372,7 +376,7 @@ def parse_config_file(args):
     # DEFAULT VALUES (overwritten if present)
     args.exp_path = "transcript"
     args.y_path = "tis"
-    args.contig_path = "contig"
+    args.seqn_path = "contig"
     args.id_path = "id"
 
     # read dict and add to args

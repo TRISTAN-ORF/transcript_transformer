@@ -111,8 +111,8 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
 
 
 class h5pyDataModule(pl.LightningDataModule):
-    def __init__(self, h5_path, exp_path, y_path, tr_id_path, contig_path, use_seq, ribo_ids, ribo_shifts, ribo_offset, merge_dict, train, 
-                 val, test, max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5,
+    def __init__(self, h5_path, exp_path, y_path, tr_id_path, seqn_path, use_seq, ribo_ids, ribo_shifts, ribo_offset, merge_dict, train=[], 
+                 val=[], test=[], max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5,
                  cond_fs=None, leaky_frac=0.05, collate_fn=collate_fn):
         super().__init__()
         self.ribo_ids = ribo_ids
@@ -127,11 +127,13 @@ class h5pyDataModule(pl.LightningDataModule):
         self.tr_id_path = tr_id_path
         self.h5_path = h5_path
         self.exp_path = exp_path
-        self.contig_path = contig_path
+        self.seqn_path = seqn_path
         self.merge_dict = merge_dict
-        self.train_contigs = np.ravel([train]) if train else []
-        self.val_contigs = np.ravel([val]) if val else []
-        self.test_contigs = np.ravel([test]) if test else []
+        self.seqns = {
+            'train': np.ravel([train]),
+            'val' : np.ravel([val]),
+            'test' : np.ravel([test])
+        }
         self.max_memory = max_memory
         self.max_transcripts_per_batch = max_transcripts_per_batch
         self.max_seq_len = max_seq_len
@@ -180,37 +182,44 @@ class h5pyDataModule(pl.LightningDataModule):
         else:
             cond = {'seq': np.full_like(self.seq_len_mask, True)}
             cond_eval = cond.copy()
-
-        if (len(self.train_contigs) == 0) and ((stage == "fit") or (stage is None)):
-            contigs = np.unique(self.fh[self.contig_path]).astype(str)
-            for ct in self.val_contigs:
-                contigs = np.delete(contigs, np.where(contigs == str(ct)))
-            for ct in self.test_contigs:
-                contigs = np.delete(contigs, np.where(contigs == str(ct)))
-            self.train_contigs = contigs
-
-        print(f"Training contigs: {self.train_contigs}")
-        print(f"Validation contigs: {self.val_contigs}")
-        print(f"Test contigs: {self.test_contigs}")
+        
+        has_train_seqns = len(self.seqns["train"]) > 0
+        has_val_seqns = len(self.seqns["val"]) > 0
+        has_test_seqns = len(self.seqns["test"]) > 0
+        if (not has_train_seqns) or (not has_val_seqns) or (not has_test_seqns):
+            print(has_train_seqns, has_val_seqns, has_test_seqns)
+            filled_sets = sum([has_train_seqns, has_val_seqns, has_test_seqns])
+            assert filled_sets == 2, "only one set (train/test/val) can be left empty"
+            seqns = np.unique(self.fh[self.seqn_path]).astype(str)
+            if len(self.seqns["train"]) == 0:
+                self.seqns["train"] = np.setdiff1d(seqns, np.hstack((self.seqns["val"], self.seqns["test"])))
+            elif len(self.seqns["val"]) == 0:
+                self.seqns["val"] = np.setdiff1d(seqns, np.hstack((self.seqns["train"], self.seqns["test"])))
+            else:
+                self.seqns["test"] = np.setdiff1d(seqns, np.hstack((self.seqns["train"], self.seqns["val"])))
+        
+        print(f"Training seqnames: {self.seqns['train']}")
+        print(f"Validation seqnames: {self.seqns['val']}")
+        print(f"Test seqnames: {self.seqns['test']}")
 
         if stage == "fit" or stage is None:
-            contig_mask = np.isin(self.fh[self.contig_path], np.array(
-                self.train_contigs).astype('S'))
+            seqn_mask = np.isin(self.fh[self.seqn_path], np.array(
+                self.seqns["train"]).astype('S'))
             mask = np.logical_and.reduce(
-                [self.global_cond_mask, contig_mask, self.seq_len_mask])
+                [self.global_cond_mask, seqn_mask, self.seq_len_mask])
             self.tr_idx, self.tr_len, self.tr_idx_adj = self.prepare_sets(
                 mask, cond)
             print(f"Training set transcripts: {len(self.tr_idx)}")
-            contig_mask = np.isin(self.fh[self.contig_path],
-                                  self.val_contigs.astype('S'))
+            seqn_mask = np.isin(self.fh[self.seqn_path],
+                                  self.seqns["val"].astype('S'))
             self.val_idx, self.val_len, self.val_idx_adj = self.prepare_sets(
-                np.logical_and(contig_mask, self.seq_len_mask), cond_eval)
+                np.logical_and(seqn_mask, self.seq_len_mask), cond_eval)
             print(f"Validation set transcripts: {len(self.val_idx)}")
         if stage in ["test", "predict"] or stage is None:
-            contig_mask = np.isin(self.fh[self.contig_path],
-                                  self.test_contigs.astype('S'))
+            seqn_mask = np.isin(self.fh[self.seqn_path],
+                                  self.seqns["test"].astype('S'))
             self.te_idx, self.te_len, self.te_idx_adj = self.prepare_sets(
-                np.logical_and(contig_mask, self.seq_len_mask), cond_eval)
+                np.logical_and(seqn_mask, self.seq_len_mask), cond_eval)
             print(f"Test set transcripts: {len(self.te_idx)}")
 
     def prepare_sets(self, mask, cond):
