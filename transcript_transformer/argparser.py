@@ -28,7 +28,7 @@ class Parser(argparse.ArgumentParser):
         )
         input_parse.add_argument(
             "--no_backup",
-            action="store_false",
+            action="store_true",
             help="Do not create a backup of the processed assembly in the GTF folder location",
         )
         input_parse.add_argument(
