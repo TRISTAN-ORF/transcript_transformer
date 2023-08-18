@@ -56,7 +56,6 @@ out_headers = [
     "ORF_len",
     "TTS_pos",
     "TTS_on_transcript",
-    "prot",
     "reads_per_base",
     "rpb_in_ORF",
     "rpb_out_ORF",
@@ -81,6 +80,7 @@ out_headers = [
     "canonical_TTS_coord",
     "canonical_TTS_idx",
     "canonical_prot_id",
+    "prot",
 ]
 
 decode = [
@@ -194,9 +194,9 @@ def construct_output_table(f, out, out_prefix, factor=1.2, prob_cutoff=0.04):
                 TIS_coord = row.exon_coords[(TIS_exon-1)*2] + TIS_exon_idx
             else:
                 TIS_coord = row.exon_coords[(TIS_exon-1)*2+1] - TIS_exon_idx        
-
             if has_stop:
-                TTS_idx = data_dict["ORF_len"][-1] + row["TIS_idx"]
+                TTS_idx = row["TIS_idx"] + data_dict["ORF_len"][-1]
+                TTS_pos = TTS_idx + 1
                 TTS_exon = np.sum(TTS_idx >= row.exon_idxs)//2 + 1
                 TTS_exon_idx = TTS_idx - row.exon_idxs[(TTS_exon-1)*2]
                 if row.strand == b"+":
@@ -204,10 +204,10 @@ def construct_output_table(f, out, out_prefix, factor=1.2, prob_cutoff=0.04):
                 else:
                     TTS_coord = row.exon_coords[(TTS_exon-1)*2+1] - TTS_exon_idx          
             else:
-                TTS_coord, TTS_exon, TTS_idx = -1, -1, -1
+                TTS_coord, TTS_exon, TTS_pos = -1, -1, -1
             data_dict["TIS_coord"].append(TIS_coord)
             data_dict["TIS_exon"].append(TIS_exon)
-            data_dict["TTS_pos"] = TTS_idx + 1
+            data_dict["TTS_pos"].append(TTS_pos)
             data_dict["TTS_exon"].append(TTS_exon)
             data_dict["TTS_coord"].append(TTS_coord)
             
