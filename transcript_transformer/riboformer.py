@@ -60,32 +60,32 @@ def main():
     f = process_data(args)
     args.out_path = os.path.splitext(args.h5_path)[0]
     assert args.use_ribo, "No ribosome data specified."
-
-    for i, fold in args.folds.items():
-        args.__dict__.update(fold)
-        callback_path = (
-            impresources.files(riboformer_models) / f"{args.transfer_checkpoint}"
+    if not args.data_process:
+        for i, fold in args.folds.items():
+            args.__dict__.update(fold)
+            callback_path = (
+                impresources.files(riboformer_models) / f"{args.transfer_checkpoint}"
+            )
+            print(f"--> Loading model: {callback_path}")
+            args.transfer_checkpoint = callback_path
+            out = train(args, predict=True, enable_model_summary=False)
+            preds = list(itertools.chain(*[o[0] for o in out]))
+            targets = list(itertools.chain(*[o[1] for o in out]))
+            ids = list(itertools.chain(*[o[2] for o in out]))
+            np.save(
+                f"{args.out_path}_out_f{i}.npy",
+                np.array([ids, preds, targets], dtype=object).T,
+            )
+        out = np.vstack(
+            [
+                np.load(f"{args.out_path}_out_f{i}.npy", allow_pickle=True)
+                for i in args.folds.keys()
+            ]
         )
-        print(f"--> Loading model: {callback_path}")
-        args.transfer_checkpoint = callback_path
-        out = train(args, predict=True, enable_model_summary=False)
-        preds = list(itertools.chain(*[o[0] for o in out]))
-        targets = list(itertools.chain(*[o[1] for o in out]))
-        ids = list(itertools.chain(*[o[2] for o in out]))
-        np.save(
-            f"{args.out_path}_out_f{i}.npy",
-            np.array([ids, preds, targets], dtype=object).T,
-        )
-    out = np.vstack(
-        [
-            np.load(f"{args.out_path}_out_f{i}.npy", allow_pickle=True)
-            for i in args.folds.keys()
-        ]
-    )
-    [os.remove(f"{args.out_path}_out_f{i}.npy") for i in args.folds.keys()]
-    np.save(f"{args.out_path}_out.npy", out)
-    f = h5py.File(args.h5_path, "r")["transcript"]
-    construct_output_table(f, out, args.out_path, args.factor, args.prob_cutoff)
+        [os.remove(f"{args.out_path}_out_f{i}.npy") for i in args.folds.keys()]
+        np.save(f"{args.out_path}_out.npy", out)
+        f = h5py.File(args.h5_path, "r")["transcript"]
+        construct_output_table(f, out, args.out_path, args.factor, args.prob_cutoff)
 
 
 if __name__ == "__main__":
