@@ -14,7 +14,7 @@ import h5max
 import pyfaidx
 from gtfparse import read_gtf
 
-
+from pdb import set_trace
 def co_to_idx(start, end):
     return start - 1, end
 
@@ -126,7 +126,7 @@ def parse_transcriptome(f, gtf_path, fa_path):
     assert "strand" in gtf.columns, "strand column missing in gtf file"
     for key, _ in headers.items():
         if key not in gtf.columns:
-            gtf = gtf.with_columns(pl.lit(None).alias(key))
+            gtf = gtf.with_columns(pl.lit("").alias(key))
 
     for contig in contig_list:
         print(f"{contig}...")
@@ -251,6 +251,7 @@ def parse_transcriptome(f, gtf_path, fa_path):
             "support_lvl",
             "canonical_prot_id",
         ]:
+            set_trace()
             grp.create_dataset(
                 key, data=array, dtype=f"<S{max([len(s) for s in array])}"
             )
