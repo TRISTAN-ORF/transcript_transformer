@@ -1,6 +1,7 @@
 import os
 import traceback
 import logging
+from copy import deepcopy
 import shutil
 import numpy as np
 
@@ -14,7 +15,7 @@ import h5max
 import pyfaidx
 from gtfparse import read_gtf
 
-from pdb import set_trace
+
 def co_to_idx(start, end):
     return start - 1, end
 
@@ -55,16 +56,19 @@ def process_data(args):
         shutil.copy(args.backup_path, args.h5_path)
         pulled = True
 
-    f = h5py.File(args.h5_path, "a")
-    if "transcript" in f.keys():
-        print(
-            "--> parsed transcriptome directory found, "
-            "assembly information can not be re-processed (for existing h5 files)."
-        )
+    if os.path.isfile(args.h5_path):
+        f = h5py.File(args.h5_path, "r")
+        if "transcript" in f.keys():
+            print(
+                "--> parsed transcriptome directory found, "
+                "assembly information can not be re-processed (for existing h5 files)."
+            )
+        f.close()
     else:
-        f.create_group("transcript")
+        data_dict = parse_transcriptome(args.gtf_path, args.fa_path)
         try:
-            f = parse_transcriptome(f, args.gtf_path, args.fa_path)
+            f = h5py.File(args.h5_path, "a")
+            f = save_transcriptome_to_h5(f, data_dict)
         except Exception as e:
             logging.error(traceback.format_exc())
             f.close()
@@ -72,19 +76,95 @@ def process_data(args):
         if not args.no_backup and not pulled:
             f.close()
             shutil.copy(args.h5_path, args.backup_path)
-            f = h5py.File(args.h5_path, "a")
+
     if args.ribo_paths:
-        f = parse_ribo_experiments(
-            f,
+        parse_ribo_experiments(
+            args.h5_path,
             args.ribo_paths,
             args.overwrite,
             args.low_memory,
         )
+
+
+def parse_ribo_experiments(h5_path, ribo_paths, overwrite=False, low_memory=False):
+    f = h5py.File(h5_path, "a")
+    if "riboseq" not in f["transcript"].keys():
+        f["transcript"].create_group("riboseq")
+    tr_ids = pl.from_numpy(np.array(f["transcript/id"])).to_series().cast(pl.Utf8)
+    tr_lens = pl.from_numpy(np.array(f["transcript/tr_len"])).to_series()
+    header_dict = {2: "tr_ID", 3: "pos", 9: "read"}
+    ribo_to_parse = deepcopy(ribo_paths)
+    for experiment, path in ribo_paths.items():
+        if experiment in f["transcript/riboseq"].keys():
+            if overwrite:
+                del f[f"transcript/riboseq/{experiment}"]
+            else:
+                print(
+                    f"--> {experiment} in h5, omitting..."
+                    "(use --overwrite for overwriting existing riboseq data)"
+                )
+                ribo_to_parse.pop(experiment)
     f.close()
+    for experiment, path in ribo_to_parse.items():
+        print(f"Loading in {experiment}...")
+        df = pl.read_csv(
+            path,
+            has_header=False,
+            comment_char="@",
+            columns=[2, 3, 9],
+            sep="\t",
+            low_memory=low_memory,
+        )
+        df.columns = list(header_dict.values())
+        # TODO implement option to run custom read lens
+        read_lens = np.arange(20, 41)
+        riboseq_data = parse_ribo_reads(df, read_lens, tr_ids, tr_lens)
+        try:
+            print("Saving data...")
+            f = h5py.File(h5_path, "a")
+            f["transcript/riboseq"].create_group(experiment)
+            exp_grp = f[f"transcript/riboseq/{experiment}"].create_group("5")
+            h5max.store_sparse(exp_grp, riboseq_data, format="csr")
+            num_reads = [s.sum() for s in riboseq_data]
+            exp_grp.create_dataset("num_reads", data=np.array(num_reads).astype(int))
+            exp_grp.create_dataset("metadata", data=read_lens)
+            f.close()
+        except Exception as error:
+            print(error)
+            del f[f"transcript/riboseq/{experiment}"]
 
 
-# add canonical TIS, canonical TTS
-def parse_transcriptome(f, gtf_path, fa_path):
+def save_transcriptome_to_h5(f, data_dict):
+    print("Save data in hdf5 files...")
+    dt8 = h5py.vlen_dtype(np.dtype("int8"))
+    dt = h5py.vlen_dtype(np.dtype("int"))
+    grp = f.create_group("transcript")
+    for key, array in data_dict.items():
+        if key in [
+            "id",
+            "contig",
+            "gene_id",
+            "gene_name",
+            "strand",
+            "biotype",
+            "tag",
+            "support_lvl",
+            "canonical_prot_id",
+        ]:
+            grp.create_dataset(
+                key, data=array, dtype=f"<S{max(1,max([len(s) for s in array]))}"
+            )
+        elif key in ["seq", "tis"]:
+            grp.create_dataset(key, data=array, dtype=dt8)
+        elif key in ["exon_idxs", "exon_coords"]:
+            grp.create_dataset(key, data=np.array(array, dtype=object), dtype=dt)
+        else:
+            grp.create_dataset(key, data=array)
+
+    return f
+
+
+def parse_transcriptome(gtf_path, fa_path):
     print("Loading assembly data...")
     genome = pyfaidx.Fasta(fa_path)
     contig_list = pd.Series(genome.keys())
@@ -235,82 +315,7 @@ def parse_transcriptome(f, gtf_path, fa_path):
             data_dict["tis"].append(target_seq)
             data_dict["contig"].append(contig)
 
-    print("Save data in hdf5 files...")
-    dt8 = h5py.vlen_dtype(np.dtype("int8"))
-    dt = h5py.vlen_dtype(np.dtype("int"))
-    grp = f["transcript"]
-    for key, array in data_dict.items():
-        if key in [
-            "id",
-            "contig",
-            "gene_id",
-            "gene_name",
-            "strand",
-            "biotype",
-            "tag",
-            "support_lvl",
-            "canonical_prot_id",
-        ]:
-            set_trace()
-            grp.create_dataset(
-                key, data=array, dtype=f"<S{max([len(s) for s in array])}"
-            )
-        elif key in ["seq", "tis"]:
-            grp.create_dataset(key, data=array, dtype=dt8)
-        elif key in ["exon_idxs", "exon_coords"]:
-            grp.create_dataset(key, data=np.array(array, dtype=object), dtype=dt)
-        else:
-            grp.create_dataset(key, data=array)
-
-    return f
-
-
-def parse_ribo_experiments(f, ribo_paths, overwrite=False, low_memory=False):
-    if "riboseq" not in f["transcript"].keys():
-        f["transcript"].create_group("riboseq")
-
-    tr_ids = np.array(f["transcript/id"])
-    tr_lens = np.array(f["transcript/tr_len"])
-    header_dict = {2: "tr_ID", 3: "pos", 9: "read"}
-
-    for experiment, path in ribo_paths.items():
-        if experiment in f["transcript/riboseq"].keys():
-            if overwrite:
-                del f[f"transcript/riboseq/{experiment}"]
-            else:
-                print(
-                    f"--> {experiment} in h5, omitting..."
-                    "(use --overwrite for overwriting existing riboseq data)"
-                )
-                continue
-        try:
-            print(f"Loading in {experiment}...")
-            df = pl.read_csv(
-                path,
-                has_header=False,
-                comment_char="@",
-                columns=[2, 3, 9],
-                sep="\t",
-                low_memory=low_memory,
-            )
-            df.columns = list(header_dict.values())
-            f["transcript/riboseq"].create_group(experiment)
-            exp_grp = f[f"transcript/riboseq/{experiment}"].create_group("5")
-            # TODO implement option to run custom read lens
-            read_lens = np.arange(20, 41)
-            riboseq_data = parse_ribo_reads(df, read_lens, tr_ids, tr_lens)
-            print("Saving data...")
-            h5max.store_sparse(exp_grp, riboseq_data, format="csr")
-            num_reads = [s.sum() for s in riboseq_data]
-            exp_grp.create_dataset("num_reads", data=np.array(num_reads).astype(int))
-            exp_grp.create_dataset("metadata", data=read_lens)
-
-            print("Data processing completed.")
-        except Exception as error:
-            print(error)
-            del f[f"transcript/riboseq/{experiment}"]
-
-    return f
+    return data_dict
 
 
 def parse_ribo_reads(df, read_lens, tr_ids, tr_lens):
@@ -319,23 +324,29 @@ def parse_ribo_reads(df, read_lens, tr_ids, tr_lens):
     print("Filtering on read lens...")
     df = df.with_columns(pl.col("read").str.lengths().alias("read_len"))
     df = df.filter(pl.col("read_len").is_in(list(read_lens)))
-    ID_unique = df["tr_ID"].unique()
-    mask_f = np.isin(tr_ids, ID_unique.to_numpy().astype("S"))
+    id_lib = df["tr_ID"].unique()
+    mask_f = tr_ids.is_in(id_lib)
 
     print("Constructing empty datasets...")
     sparse_array = [
-        sparse.csr_matrix((num_read_lens, w)) for w in tqdm(tr_lens[~mask_f])
+        sparse.csr_matrix((num_read_lens, w)) for w in tqdm(tr_lens.filter(~mask_f))
     ]
     riboseq_data = np.empty(len(mask_f), dtype=object)
     riboseq_data[~mask_f] = sparse_array
     df = df.sort("tr_ID")
 
+    tr_mask = id_lib.is_in(tr_ids)
+    assert tr_mask.all(), (
+        "Transcript IDs exist within mapped reads which"
+        " are not present in the h5 database. Please apply an identical assembly"
+        " for both setting up this database and mapping the ribosome reads."
+    )
     print("Aggregating reads...")
-    for tr_id, group in tqdm(df.groupby("tr_ID"), total=len(ID_unique)):
-        mask_tr = tr_ids == tr_id.encode()
-        tr_reads = np.zeros((num_read_lens, tr_lens[mask_tr][0]), dtype=np.uint32)
+    for tr_id, group in tqdm(df.groupby("tr_ID"), total=len(id_lib)):
+        mask = tr_ids == tr_id
+        tr_reads = np.zeros((num_read_lens, tr_lens.filter(mask)[0]), dtype=np.uint32)
         for row in group.rows():
             tr_reads[read_len_dict[row[3]], row[1] - 1] += 1
-        riboseq_data[mask_tr] = sparse.csr_matrix(tr_reads, dtype=int)
+        riboseq_data[mask] = sparse.csr_matrix(tr_reads, dtype=int)
 
     return riboseq_data
