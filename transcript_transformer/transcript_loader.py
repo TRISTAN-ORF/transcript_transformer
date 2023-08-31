@@ -224,15 +224,13 @@ class h5pyDataModule(pl.LightningDataModule):
     def prepare_sets(self, mask, cond):
         mask_set = []
         len_set = []
-        sample_count = []
         tr_len = np.array(self.fh['tr_len'])
         for _, cond_mask in cond.items():
             mask_set.append(np.logical_and(cond_mask, mask))
-            sample_count.append(sum(mask_set[-1]))
             len_set.append(tr_len[mask_set[-1]])
-        mask = np.hstack(mask_set)
+        mask_all = np.hstack(mask_set)
         lens = np.hstack(len_set)
-        idxs = np.where(mask)[0]
+        idxs = np.where(mask_all)[0]
         sort_idxs = np.argsort(lens)
 
         return idxs[sort_idxs], lens[sort_idxs], len(mask)
@@ -283,7 +281,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         self.idx_adj = idx_adj
         self.batches = batches
         self.merge_dict = merge_dict
-
+        
     def __len__(self):
         return len(self.batches)
 
