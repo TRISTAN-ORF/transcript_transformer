@@ -128,7 +128,7 @@ def construct_prot(seq):
     return string, has_stop, stop_codon
 
 
-def construct_output_table(f, out, out_prefix, factor=1.2, prob_cutoff=0.04):
+def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05):
     f_tr_ids = np.array(f["id"])
     ribo_ids = np.array([o[0].split(b"|")[0] for o in out])
     tr_ids = np.array([o[0].split(b"|")[1] for o in out])
@@ -144,7 +144,7 @@ def construct_output_table(f, out, out_prefix, factor=1.2, prob_cutoff=0.04):
 
         preds = np.hstack([o[1] for o in out[ribo_mask]])
         num_high_preds = (preds > prob_cutoff).sum()
-        k = min(num_top_results, num_high_preds)
+        k = max(min(num_top_results, num_high_preds), 100)
         lens = np.array(f["tr_len"])[pred_to_h5_args]
         cum_lens = np.cumsum(np.insert(lens, 0, 0))
         idxs = np.argpartition(preds, -k)[-k:]
