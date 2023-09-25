@@ -58,7 +58,7 @@ def main():
     args = parse_args()
     args = load_args((impresources.files(riboformer_models) / "50perc_06_23.yml"), args)
     f = process_data(args)
-    args.out_path = os.path.splitext(args.h5_path)[0]
+    args.out_path = os.path.splitext(args.input_config)[0]
     assert args.use_ribo, "No ribosome data specified."
     if not args.data_process:
         for i, fold in args.folds.items():
