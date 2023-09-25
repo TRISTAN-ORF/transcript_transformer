@@ -15,7 +15,6 @@ import h5max
 import pyfaidx
 from gtfparse import read_gtf
 
-
 def co_to_idx(start, end):
     return start - 1, end
 
@@ -329,7 +328,7 @@ def parse_ribo_reads(df, read_lens, tr_ids, tr_lens):
 
     print("Constructing empty datasets...")
     sparse_array = [
-        sparse.csr_matrix((num_read_lens, w)) for w in tqdm(tr_lens.filter(~mask_f))
+        sparse.csr_matrix((num_read_lens, w), dtype=np.int32) for w in tqdm(tr_lens.filter(~mask_f))
     ]
     riboseq_data = np.empty(len(mask_f), dtype=object)
     riboseq_data[~mask_f] = sparse_array
@@ -344,9 +343,9 @@ def parse_ribo_reads(df, read_lens, tr_ids, tr_lens):
     print("Aggregating reads...")
     for tr_id, group in tqdm(df.groupby("tr_ID"), total=len(id_lib)):
         mask = tr_ids == tr_id
-        tr_reads = np.zeros((num_read_lens, tr_lens.filter(mask)[0]), dtype=np.uint32)
+        tr_reads = np.zeros((num_read_lens, tr_lens.filter(mask)[0]), dtype=np.int32)
         for row in group.rows():
             tr_reads[read_len_dict[row[3]], row[1] - 1] += 1
-        riboseq_data[mask] = sparse.csr_matrix(tr_reads, dtype=int)
+        riboseq_data[mask] = sparse.csr_matrix(tr_reads, dtype=np.int32)
 
     return riboseq_data
