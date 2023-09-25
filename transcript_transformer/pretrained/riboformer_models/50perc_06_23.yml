@@ -11,3 +11,4 @@ folds:
     transfer_checkpoint: 50perc_06_23_f2.ckpt
 patience: 6
 seq : false
+lr: 0.0003
