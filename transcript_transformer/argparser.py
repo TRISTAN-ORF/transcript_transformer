@@ -261,7 +261,7 @@ class Parser(argparse.ArgumentParser):
         )
 
     def add_training_args(self):
-        tr_parse = self.add_argument_group("Data loading arguments")
+        tr_parse = self.add_argument_group("Model training arguments")
         tr_parse.add_argument(
             "--log_dir",
             type=str,
