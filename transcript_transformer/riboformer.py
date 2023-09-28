@@ -17,6 +17,12 @@ def parse_args():
     parser = Parser(description="Run Ribo-former", stage="train")
     parser.add_data_args()
     parser.add_argument(
+        "--out_prefix",
+        type=str,
+        default=None,
+        help="path prefix to output the results to.",
+    )
+    parser.add_argument(
         "--factor",
         type=float,
         default=0.8,
@@ -58,7 +64,8 @@ def main():
     args = parse_args()
     args = load_args((impresources.files(riboformer_models) / "50perc_06_23.yml"), args)
     f = process_data(args)
-    args.out_path = os.path.splitext(args.input_config)[0]
+    if args.out_prefix is None:
+        args.out_prefix = os.path.splitext(args.input_config)[0]
     assert args.use_ribo, "No ribosome data specified."
     if not args.data_process:
         for i, fold in args.folds.items():
@@ -70,22 +77,22 @@ def main():
             args.transfer_checkpoint = callback_path
             out = train(args, predict=True, enable_model_summary=False)
             preds = list(itertools.chain(*[o[0] for o in out]))
-            targets = list(itertools.chain(*[o[1] for o in out]))
+            targets = list(itertools.chain(*[[t.astype(bool) for t in o[1]] for o in out]))
             ids = list(itertools.chain(*[o[2] for o in out]))
             np.save(
-                f"{args.out_path}_out_f{i}.npy",
+                f"{args.out_prefix}_out_f{i}.npy",
                 np.array([ids, preds, targets], dtype=object).T,
             )
         out = np.vstack(
             [
-                np.load(f"{args.out_path}_out_f{i}.npy", allow_pickle=True)
+                np.load(f"{args.out_prefix}_out_f{i}.npy", allow_pickle=True)
                 for i in args.folds.keys()
             ]
         )
-        [os.remove(f"{args.out_path}_out_f{i}.npy") for i in args.folds.keys()]
-        np.save(f"{args.out_path}_out.npy", out)
+        [os.remove(f"{args.out_prefix}_out_f{i}.npy") for i in args.folds.keys()]
+        np.save(f"{args.out_prefix}_out.npy", out)
         f = h5py.File(args.h5_path, "r")["transcript"]
-        construct_output_table(f, out, args.out_path, args.factor, args.prob_cutoff)
+        construct_output_table(f, out, args.out_prefix, args.factor, args.prob_cutoff)
 
 
 if __name__ == "__main__":
