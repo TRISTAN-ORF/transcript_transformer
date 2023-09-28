@@ -135,6 +135,7 @@ def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05):
     ribo_sets = np.unique(ribo_ids)
 
     for ribo in ribo_sets:
+        print(f"Processing {ribo.decode()}...")
         ribo_mask = ribo_ids == ribo
         canon_TIS_sum = sum([o[2].sum() for o in out[ribo_mask]])
         num_top_results = int(canon_TIS_sum*factor)
