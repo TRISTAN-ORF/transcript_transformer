@@ -67,6 +67,7 @@ out_headers = [
     "tr_len",
     "dist_from_canonical_TIS",
     "frame_wrt_canonical_TIS",
+    "correction",
     "TIS_coord",
     "TIS_exon",
     "TTS_coord",
@@ -128,7 +129,7 @@ def construct_prot(seq):
     return string, has_stop, stop_codon
 
 
-def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05):
+def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05, correction=False, dist=18):
     f_tr_ids = np.array(f["id"])
     ribo_ids = np.array([o[0].split(b"|")[0] for o in out])
     tr_ids = np.array([o[0].split(b"|")[1] for o in out])
@@ -162,41 +163,50 @@ def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05):
         }
         idx_dict.update(data_dict)
         df_out = pd.DataFrame(data=idx_dict)
-        df_out["seqname"] = df_out["contig"]
-        df_out["TIS_pos"] = df_out["TIS_idx"] + 1
-        df_out["output"] = preds[idxs]
-        df_out = df_out.sort_values("output", ascending=False)
-        df_out["output_rank"] = np.arange(len(df_out))
-
-        df_out["dist_from_canonical_TIS"] = df_out["TIS_idx"] - df_out["canonical_TIS_idx"]
-        df_out.loc[df_out["canonical_TIS_idx"] == -1, "dist_from_canonical_TIS"] = np.nan
-        df_out["frame_wrt_canonical_TIS"] = df_out["dist_from_canonical_TIS"] % 3
-
+        df_out['correction'] = np.nan
+        
         data_dict = {"start_codon": [], "stop_codon": [], "prot": [], "TTS_exon": [],
                      "TTS_on_transcript": [], "TIS_coord": [], "TIS_exon": [],
                      "TTS_coord": [], "TTS_coord": [], "TTS_pos": [], "ORF_len": []}
 
+        TIS_idxs = df_out.TIS_idx.copy()
+        corrections = df_out.correction.copy()
         for i, row in tqdm(
             df_out.iterrows(),
             total=len(df_out),
             desc=f"{time()}: parsing ORF information ",
-        ):
-            tr_seq = f["seq"][row.f_idx][row.TIS_idx:]
-            DNA_frag = vec2DNA(tr_seq)
+        ):  
+            tr_seq = f["seq"][row.f_idx]
+            TIS_idx = row.TIS_idx
+            if correction and not np.array_equal(tr_seq[TIS_idx:TIS_idx+3], [0,1,3]):
+                low_bound = max(0, TIS_idx-(dist*3))
+                tr_seq_win = tr_seq[low_bound: TIS_idx+(dist+1)*3]
+                atg = [0,1,3]
+                matches = [
+                    x for x in range(len(tr_seq_win)) if np.array_equal(tr_seq_win[x:x+len(atg)], atg)
+                ]
+                matches = np.array(matches) - min(TIS_idx, dist*3)
+                matches = matches[matches%3 == 0]
+                if len(matches) > 0:
+                    match = matches[np.argmin(abs(matches))]
+                    corrections[row.name] = match
+                    TIS_idx = TIS_idx + match
+                    TIS_idxs[row.name] = TIS_idx
+            DNA_frag = vec2DNA(tr_seq[TIS_idx:])
             data_dict["start_codon"].append(DNA_frag[:3])
             prot, has_stop, stop_codon = construct_prot(DNA_frag)
             data_dict["stop_codon"].append(stop_codon)
             data_dict["prot"].append(prot)
             data_dict["TTS_on_transcript"].append(has_stop)
             data_dict["ORF_len"].append(len(prot)*3)
-            TIS_exon = np.sum(row.TIS_idx >= row.exon_idxs)//2 + 1
-            TIS_exon_idx = row.TIS_idx - row.exon_idxs[(TIS_exon-1)*2]
+            TIS_exon = np.sum(TIS_idx >= row.exon_idxs)//2 + 1
+            TIS_exon_idx = TIS_idx - row.exon_idxs[(TIS_exon-1)*2]
             if row.strand == b"+":
                 TIS_coord = row.exon_coords[(TIS_exon-1)*2] + TIS_exon_idx
             else:
                 TIS_coord = row.exon_coords[(TIS_exon-1)*2+1] - TIS_exon_idx        
             if has_stop:
-                TTS_idx = row["TIS_idx"] + data_dict["ORF_len"][-1]
+                TTS_idx = TIS_idx + data_dict["ORF_len"][-1]
                 TTS_pos = TTS_idx + 1
                 TTS_exon = np.sum(TTS_idx >= row.exon_idxs)//2 + 1
                 TTS_exon_idx = TTS_idx - row.exon_idxs[(TTS_exon-1)*2]
@@ -206,6 +216,7 @@ def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05):
                     TTS_coord = row.exon_coords[(TTS_exon-1)*2+1] - TTS_exon_idx          
             else:
                 TTS_coord, TTS_exon, TTS_pos = -1, -1, -1
+
             data_dict["TIS_coord"].append(TIS_coord)
             data_dict["TIS_exon"].append(TIS_exon)
             data_dict["TTS_pos"].append(TTS_pos)
@@ -213,6 +224,18 @@ def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05):
             data_dict["TTS_coord"].append(TTS_coord)
             
         df_out = df_out.assign(**data_dict)
+        df_out["TIS_idx"] = TIS_idxs
+        df_out["correction"] = corrections
+        
+        df_out["seqname"] = df_out["contig"]
+        df_out["TIS_pos"] = df_out["TIS_idx"] + 1
+        df_out["output"] = preds[idxs]
+        df_out = df_out.sort_values("output", ascending=False)
+        df_out["output_rank"] = np.arange(len(df_out))
+
+        df_out["dist_from_canonical_TIS"] = df_out["TIS_idx"] - df_out["canonical_TIS_idx"]
+        df_out.loc[df_out["canonical_TIS_idx"] == -1, "dist_from_canonical_TIS"] = np.nan
+        df_out["frame_wrt_canonical_TIS"] = df_out["dist_from_canonical_TIS"] % 3
 
         sparse_reads = h5max.load_sparse(
             f[f"riboseq/{ribo.decode()}/5/"], df_out["f_idx"], to_numpy=False
@@ -258,11 +281,17 @@ def construct_output_table(f, out, out_prefix, factor=0.8, prob_cutoff=0.05):
                     elif row["TTS_pos"] < row["canonical_TIS_idx"] + 1:
                         orf_type.append("uORF")
                     elif row["TIS_pos"] < row["canonical_TIS_idx"] + 1:
-                        orf_type.append("uoORF")
+                        if row["TTS_pos"] == row["canonical_TTS_idx"] + 1:
+                            orf_type.append("N-terminal extension")
+                        else:
+                            orf_type.append("uoORF")
                     elif row["TTS_pos"] > row["canonical_TTS_idx"] + 1:
                         orf_type.append("doORF")
                     else:
-                        orf_type.append("intORF")
+                        if row["TTS_pos"] == row["canonical_TTS_idx"] + 1:
+                            orf_type.append("N-terminal truncation")
+                        else:
+                            orf_type.append("intORF")
                 else:
                     orf_type.append("lncRNA-ORF")
 
