@@ -7,6 +7,7 @@ import numpy as np
 
 from scipy import sparse
 from tqdm import tqdm
+import biobear as bb
 import polars as pl
 import pandas as pd
 
@@ -14,6 +15,7 @@ import h5py
 import h5max
 import pyfaidx
 from gtfparse import read_gtf
+
 
 def co_to_idx(start, end):
     return start - 1, end
@@ -46,17 +48,17 @@ def slice_gen(
     return np.array(sl)
 
 
-def process_data(args):
-    if not args.backup_path:
-        args.backup_path = os.path.splitext(args.gtf_path)[0] + ".h5"
+def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
+    if not backup_path:
+        backup_path = os.path.splitext(gtf_path)[0] + ".h5"
     pulled = False
-    if not os.path.isfile(args.h5_path) and os.path.isfile(args.backup_path):
-        print(f"Processed assembly data restored ({args.backup_path})")
-        shutil.copy(args.backup_path, args.h5_path)
+    if not os.path.isfile(h5_path) and os.path.isfile(backup_path):
+        print(f"Processed assembly data restored ({backup_path})")
+        shutil.copy(backup_path, h5_path)
         pulled = True
 
-    if os.path.isfile(args.h5_path):
-        f = h5py.File(args.h5_path, "r")
+    if os.path.isfile(h5_path):
+        f = h5py.File(h5_path, "r")
         if "transcript" in f.keys():
             print(
                 "--> parsed transcriptome directory found, "
@@ -64,28 +66,20 @@ def process_data(args):
             )
         f.close()
     else:
-        data_dict = parse_transcriptome(args.gtf_path, args.fa_path)
+        data_dict = parse_transcriptome(gtf_path, fa_path)
         try:
-            f = h5py.File(args.h5_path, "a")
+            f = h5py.File(h5_path, "a")
             f = save_transcriptome_to_h5(f, data_dict)
         except Exception as e:
             logging.error(traceback.format_exc())
             f.close()
-            os.remove(args.h5_path)
-        if not args.no_backup and not pulled:
+            os.remove(h5_path)
+        if backup and not pulled:
             f.close()
-            shutil.copy(args.h5_path, args.backup_path)
-
-    if args.ribo_paths:
-        parse_ribo_experiments(
-            args.h5_path,
-            args.ribo_paths,
-            args.overwrite,
-            args.low_memory,
-        )
+            shutil.copy(h5_path, backup_path)
 
 
-def parse_ribo_experiments(h5_path, ribo_paths, overwrite=False, low_memory=False):
+def process_ribo_data(h5_path, ribo_paths, overwrite=False, low_memory=False):
     f = h5py.File(h5_path, "a")
     if "riboseq" not in f["transcript"].keys():
         f["transcript"].create_group("riboseq")
@@ -106,14 +100,24 @@ def parse_ribo_experiments(h5_path, ribo_paths, overwrite=False, low_memory=Fals
     f.close()
     for experiment, path in ribo_to_parse.items():
         print(f"Loading in {experiment}...")
-        df = pl.read_csv(
-            path,
-            has_header=False,
-            comment_char="@",
-            columns=[2, 3, 9],
-            sep="\t",
-            low_memory=low_memory,
-        )
+        _, file_ext = os.path.splitext(path)
+        if file_ext == ".sam":
+            df = pl.read_csv(
+                path,
+                has_header=False,
+                comment_char="@",
+                columns=[2, 3, 9],
+                dtypes=[pl.Utf8, pl.Int32, pl.Utf8],
+                sep="\t",
+                low_memory=low_memory,
+            )
+        elif file_ext == ".bam":
+            s = f"CREATE EXTERNAL TABLE test STORED AS BAM LOCATION '{path}'"
+            ctx = bb.connect()
+            ctx.sql(s)
+            df = ctx.sql("SELECT reference, start, sequence FROM test").to_polars()
+        else:
+            raise TypeError(f"file extension {file_ext} not supported")
         df.columns = list(header_dict.values())
         # TODO implement option to run custom read lens
         read_lens = np.arange(20, 41)
@@ -155,7 +159,7 @@ def save_transcriptome_to_h5(f, data_dict):
             )
         elif key in ["seq", "tis"]:
             grp.create_dataset(key, data=array, dtype=dt8)
-        elif key in ["exon_idxs", "exon_coords"]:
+        elif key in ["exon_idxs", "exon_coords", "cds_idxs", "cds_coords"]:
             grp.create_dataset(key, data=np.array(array, dtype=object), dtype=dt)
         else:
             grp.create_dataset(key, data=array)
@@ -194,6 +198,8 @@ def parse_transcriptome(gtf_path, fa_path):
         "canonical_TIS_exon_idx": [],
         "exon_idxs": [],
         "exon_coords": [],
+        "cds_idxs": [],
+        "cds_coords": [],
         "canonical_TIS_idx": [],
         "canonical_TIS_coord": [],
         "canonical_TTS_idx": [],
@@ -233,8 +239,14 @@ def parse_transcriptome(gtf_path, fa_path):
             # obtain and sort exon information (strings have wrong sortin (e.g. 10, 11, 2, 3, ...))
             exons = gtf_tr.filter(pl.col("feature") == "exon")
             exon_lens = (abs(exons["start"] - exons["end"]) + 1).to_numpy()
-            strand_is_pos = (exons["strand"] == "+").any()
             cum_exon_lens = np.insert(np.cumsum(exon_lens), 0, 0)
+            cdss = gtf_tr.filter(pl.col("feature") == "CDS")
+            if len(cdss) > 0:
+                cds_lens = (abs(cdss["start"] - cdss["end"]) + 1).to_numpy()
+                cum_cds_lens = np.insert(np.cumsum(cds_lens), 0, 0)
+                cds_idxs = np.vstack((cum_cds_lens[:-1], cum_cds_lens[1:])).T.ravel()
+
+            strand_is_pos = (exons["strand"] == "+").any()
             data_dict["tr_len"].append(exon_lens.sum())
 
             if len(exons) == 0:
@@ -244,7 +256,7 @@ def parse_transcriptome(gtf_path, fa_path):
                 )
 
             # obtain TISs, select first in case of split (intron) start codon
-            # TODO: when multiple TISs are supported, alter code
+            # TODO: when multiple TISs are supported, code needs update
             start_codon = (
                 gtf_tr.filter(pl.col("feature") == "start_codon").slice(0, 1).to_dicts()
             )
@@ -252,9 +264,8 @@ def parse_transcriptome(gtf_path, fa_path):
                 gtf_tr.filter(pl.col("feature") == "stop_codon").slice(0, 1).to_dicts()
             )
 
-            CDSs = gtf_tr.filter(pl.col("feature") == "CDS")
-            cds_length = abs(CDSs["start"].sum() - CDSs["end"].sum()) + len(CDSs)
             target_seq = np.full(exon_lens.sum(), False)
+
             if len(start_codon) > 0:
                 # use as index for sorted dfs
                 start_codon = start_codon[0]
@@ -278,11 +289,12 @@ def parse_transcriptome(gtf_path, fa_path):
                 target_seq[tis_idx] = 1
                 data_dict["canonical_TIS_exon_idx"].append(exon_i)
                 data_dict["canonical_TIS_idx"].append(tis_idx)
-                data_dict["canonical_TTS_idx"].append(tis_idx + cds_length)
+                data_dict["canonical_TTS_idx"].append(tis_idx + sum(cds_lens))
                 prot_id = gtf_tr["protein_id"].unique(maintain_order=True)[1]
                 data_dict["canonical_prot_id"].append(prot_id)
                 data_dict["canonical_TIS_coord"].append(tis)
                 data_dict["canonical_TTS_coord"].append(tts)
+
             else:
                 data_dict["canonical_TIS_exon_idx"].append(-1)
                 data_dict["canonical_TIS_idx"].append(-1)
@@ -290,6 +302,24 @@ def parse_transcriptome(gtf_path, fa_path):
                 data_dict["canonical_prot_id"].append("")
                 data_dict["canonical_TIS_coord"].append(-1)
                 data_dict["canonical_TTS_coord"].append(-1)
+                # some transcripts have CDSs but no start codons...
+
+            if len(cdss) > 0:
+                if strand_is_pos:
+                    exon_i = cdss[0, "exon_number"] - 1
+                    exon_shift = cum_exon_lens[exon_i]
+                    cds_offset = exon_shift + cdss[0, "start"] - exons[exon_i, "start"]
+                else:
+                    exon_i = cdss[-1, "exon_number"] - 1
+                    exon_shift = cum_exon_lens[exon_i]
+                    cds_offset = exon_shift + exons[exon_i, "end"] - cdss[-1, "end"]
+                data_dict["cds_idxs"].append(cds_idxs + cds_offset)
+                data_dict["cds_coords"].append(
+                    cdss[:, ["start", "end"]].transpose().melt()["value"].to_numpy()
+                )
+            else:
+                data_dict["cds_idxs"].append(np.empty(0, dtype=int))
+                data_dict["cds_coords"].append(np.empty(0, dtype=int))
 
             exon_coords = []
             exon_seqs = []
@@ -306,7 +336,6 @@ def parse_transcriptome(gtf_path, fa_path):
                 exon_coords.append(exon["start"])
                 exon_coords.append(exon["end"])
                 exon_seqs.append(exon_seq)
-
             exon_idxs = np.vstack((cum_exon_lens[:-1], cum_exon_lens[1:])).T.ravel()
             data_dict["exon_idxs"].append(exon_idxs)
             data_dict["exon_coords"].append(np.array(exon_coords))
@@ -317,35 +346,40 @@ def parse_transcriptome(gtf_path, fa_path):
     return data_dict
 
 
-def parse_ribo_reads(df, read_lens, tr_ids, tr_lens):
+def parse_ribo_reads(df, read_lens, f_ids, f_lens):
     num_read_lens = len(read_lens)
     read_len_dict = {read_len: i for i, read_len in enumerate(read_lens)}
     print("Filtering on read lens...")
     df = df.with_columns(pl.col("read").str.lengths().alias("read_len"))
     df = df.filter(pl.col("read_len").is_in(list(read_lens)))
-    id_lib = df["tr_ID"].unique()
-    mask_f = tr_ids.is_in(id_lib)
+    df = df.sort("tr_ID")
+    id_lib = df["tr_ID"].unique(maintain_order=True)
+    mask_f = f_ids.is_in(id_lib)
 
     print("Constructing empty datasets...")
     sparse_array = [
-        sparse.csr_matrix((num_read_lens, w), dtype=np.int32) for w in tqdm(tr_lens.filter(~mask_f))
+        sparse.csr_matrix((num_read_lens, w), dtype=np.int32)
+        for w in tqdm(f_lens.filter(~mask_f))
     ]
     riboseq_data = np.empty(len(mask_f), dtype=object)
     riboseq_data[~mask_f] = sparse_array
-    df = df.sort("tr_ID")
 
-    tr_mask = id_lib.is_in(tr_ids)
+    tr_mask = id_lib.is_in(f_ids)
     assert tr_mask.all(), (
         "Transcript IDs exist within mapped reads which"
         " are not present in the h5 database. Please apply an identical assembly"
         " for both setting up this database and mapping the ribosome reads."
     )
     print("Aggregating reads...")
-    for tr_id, group in tqdm(df.groupby("tr_ID"), total=len(id_lib)):
-        mask = tr_ids == tr_id
-        tr_reads = np.zeros((num_read_lens, tr_lens.filter(mask)[0]), dtype=np.int32)
+    arg_sort = f_ids.arg_sort()
+    h5_idxs = arg_sort[f_ids[arg_sort].search_sorted(id_lib)]
+    for idx, (_, group) in tqdm(
+        zip(h5_idxs, df.groupby("tr_ID", maintain_order=True)),
+        total=len(id_lib),
+    ):
+        tr_reads = np.zeros((num_read_lens, f_lens[idx]), dtype=np.int32)
         for row in group.rows():
             tr_reads[read_len_dict[row[3]], row[1] - 1] += 1
-        riboseq_data[mask] = sparse.csr_matrix(tr_reads, dtype=np.int32)
+        riboseq_data[idx] = sparse.csr_matrix(tr_reads, dtype=np.int32)
 
     return riboseq_data

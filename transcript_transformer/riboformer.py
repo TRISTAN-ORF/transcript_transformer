@@ -2,26 +2,20 @@ import os
 import sys
 import numpy as np
 import yaml
-import itertools
 import h5py
 from importlib import resources as impresources
+from copy import deepcopy
 
-from transcript_transformer.transcript_transformer import train
+from transcript_transformer.transcript_transformer import train, predict
 from transcript_transformer.argparser import Parser, parse_config_file
 from transcript_transformer.pretrained import riboformer_models
-from transcript_transformer.data import process_data
+from transcript_transformer.data import process_seq_data, process_ribo_data
 from transcript_transformer.processing import construct_output_table
 
 
 def parse_args():
     parser = Parser(description="Run Ribo-former", stage="train")
     parser.add_data_args()
-    parser.add_argument(
-        "--out_prefix",
-        type=str,
-        default=None,
-        help="path prefix to output the results to.",
-    )
     parser.add_argument(
         "--factor",
         type=float,
@@ -45,8 +39,15 @@ def parse_args():
     parser.add_argument(
         "--distance",
         type=int,
-        default=6,
+        default=9,
         help="number of codons to search up- and downstream for an ATG (see also --no_correction)",
+    )
+    parser.add_argument(
+        "--train_seq_model",
+        action="store_true",
+        help="Train additional model for ORF detection that applies sequence info only. "
+        "See TIS Transformer (https://doi.org/10.1093/nargab/lqad021) for more info. "
+        "TIS Transformer predictions are given in output table under seq_model_pred.",
     )
     parser.add_argument(
         "--data",
@@ -70,7 +71,7 @@ def parse_args():
         " --data_process or --result_process"
     )
     args.mlm, args.mask_frac, args.rand_frac = False, False, False
-
+    args.use_seq = False
     return args
 
 
@@ -85,48 +86,61 @@ def load_args(path, args):
 def main():
     args = parse_args()
     args = load_args((impresources.files(riboformer_models) / "50perc_06_23.yml"), args)
-    if not args.results:
-        f = process_data(args)
     assert args.use_ribo, "No ribosome data specified."
-    if not (args.data or args.results):
-        for i, fold in args.folds.items():
-            args.__dict__.update(fold)
-            callback_path = (
-                impresources.files(riboformer_models) / f"{args.transfer_checkpoint}"
-            )
-            print(f"--> Loading model: {callback_path}")
-            args.transfer_checkpoint = callback_path
-            out = train(args, predict=True, enable_model_summary=False)
-            preds = list(itertools.chain(*[o[0] for o in out]))
-            targets = list(
-                itertools.chain(*[[t.astype(bool) for t in o[1]] for o in out])
-            )
-            ids = list(itertools.chain(*[o[2] for o in out]))
-            np.save(
-                f"{args.out_prefix}_out_f{i}.npy",
-                np.array([ids, preds, targets], dtype=object).T,
-            )
-        out = np.vstack(
-            [
-                np.load(f"{args.out_prefix}_out_f{i}.npy", allow_pickle=True)
-                for i in args.folds.keys()
-            ]
+    if not args.results:
+        process_seq_data(
+            args.h5_path, args.gtf_path, args.fa_path, args.backup_path, ~args.no_backup
         )
-        [os.remove(f"{args.out_prefix}_out_f{i}.npy") for i in args.folds.keys()]
-        np.save(f"{args.out_prefix}_out.npy", out)
+        process_ribo_data(
+            args.h5_path, args.ribo_paths, args.overwrite, args.low_memory
+        )
+    if not (args.data or args.results):
+        args.input_type = "config"
+        for i, ribo_set in enumerate(args.ribo_ids):
+            args_set = deepcopy(args)
+            args_set.ribo_ids = [ribo_set]
+            args_set.cond["grouped"] = [args.cond["grouped"][i]]
+            ribo_set_str = "@".join(ribo_set)
+            for j, fold in args_set.folds.items():
+                args_set.__dict__.update(fold)
+                callback_path = (
+                    impresources.files(riboformer_models)
+                    / f"{args_set.transfer_checkpoint}"
+                )
+                print(f"--> Loading model: {callback_path}")
+                args_set.transfer_checkpoint = callback_path
+                trainer, model = train(
+                    args_set, test_model=False, enable_model_summary=False
+                )
+                print(f"--> Predicting samples for {ribo_set_str}")
+                args_set.out_prefix = f"{args.out_prefix}_{ribo_set_str}_f{j}"
+                predict(args_set, trainer=trainer, model=model, postprocess=False)
+
+            ribo_set_str = "@".join(ribo_set)
+            prefix = f"{args.out_prefix}_{ribo_set_str}"
+            merge_outputs(prefix, args.folds.keys())
 
     if not args.data:
-        f = h5py.File(args.h5_path, "r")["transcript"]
-        out = np.load(f"{args.out_prefix}_out.npy", allow_pickle=True)
-        construct_output_table(
-            f,
-            out,
-            args.out_prefix,
-            args.factor,
-            args.prob_cutoff,
-            ~args.no_correction,
-            args.distance,
-        )
+        f = h5py.File(args.h5_path, "r")
+        for ribo_set in args.ribo_ids:
+            ribo_set_str = "@".join(ribo_set)
+            out = np.load(f"{args.out_prefix}_{ribo_set_str}.npy", allow_pickle=True)
+            construct_output_table(
+                f["transcript"],
+                f"{args.out_prefix}_{ribo_set_str}",
+                args.factor,
+                args.prob_cutoff,
+                ~args.no_correction,
+                args.distance,
+                out,
+            )
+        f.close()
+
+
+def merge_outputs(prefix, keys):
+    out = np.vstack([np.load(f"{prefix}_f{i}.npy", allow_pickle=True) for i in keys])
+    np.save(f"{prefix}.npy", out)
+    [os.remove(f"{prefix}_f{i}.npy") for i in keys]
 
 
 if __name__ == "__main__":

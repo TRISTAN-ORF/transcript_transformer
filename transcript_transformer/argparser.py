@@ -1,4 +1,3 @@
-import itertools
 import json
 import yaml
 import argparse
@@ -57,7 +56,7 @@ class Parser(argparse.ArgumentParser):
         comp_parse.add_argument(
             "--max_memory",
             type=int,
-            default=24000,
+            default=30000,
             help="Value (GPU vRAM) used to bucket batches based on rough estimates. "
             "Reduce this setting if running out of memory",
         )
@@ -83,7 +82,7 @@ class Parser(argparse.ArgumentParser):
         tf_parse.add_argument(
             "--num_tokens",
             type=int,
-            default=5,
+            default=8,
             help="number of unique nucleotide input tokens (for sequence input)",
         )
         tf_parse.add_argument(
@@ -207,28 +206,33 @@ class Parser(argparse.ArgumentParser):
                 type=str,
                 help="Path to checkpoint pretrained model",
             )
-            dl_parse.add_argument(
-                "--train",
-                type=str,
-                nargs="*",
-                default=[],
-                help="chromosomes used for training. If not specified, "
-                "training is performed on all available chromosomes excluding val/test contigs",
-            )
-            dl_parse.add_argument(
-                "--val",
-                type=str,
-                nargs="*",
-                default=[],
-                help="chromosomes used for validation",
-            )
-            dl_parse.add_argument(
-                "--test",
-                type=str,
-                nargs="*",
-                default=[],
-                help="chromosomes used for testing",
-            )
+        dl_parse.add_argument(
+            "--train",
+            type=str,
+            nargs="*",
+            default=[],
+            help="chromosomes used for training. If not specified, "
+            "training is performed on all available chromosomes excluding val/test contigs",
+        )
+        dl_parse.add_argument(
+            "--val",
+            type=str,
+            nargs="*",
+            default=[],
+            help="chromosomes used for validation",
+        )
+        dl_parse.add_argument(
+            "--test",
+            type=str,
+            nargs="*",
+            default=[],
+            help="chromosomes used for testing",
+        )
+        dl_parse.add_argument(
+            "--strict_validation",
+            action="store_true",
+            help="does not apply custom loading filters (see 'cond') defined in config file to validation set",
+        )
         dl_parse.add_argument(
             "--leaky_frac",
             type=float,
@@ -253,11 +257,6 @@ class Parser(argparse.ArgumentParser):
             type=int,
             default=2000,
             help="maximum of transcripts per batch",
-        )
-        dl_parse.add_argument(
-            "--ribo_offset",
-            action="store_true",
-            help="offset mapped ribosome reads by read length",
         )
 
     def add_training_args(self):
@@ -293,7 +292,7 @@ class Parser(argparse.ArgumentParser):
         tr_parse.add_argument(
             "--patience",
             type=int,
-            default=8,
+            default=5,
             help="Number of epochs required without the validation loss reducing"
             "to stop training",
         )
@@ -344,7 +343,7 @@ class Parser(argparse.ArgumentParser):
     def add_preds_args(self):
         pr_parse = self.add_argument_group("Model prediction processing arguments")
         pr_parse.add_argument(
-            "--prob_th",
+            "--min_prob",
             type=float,
             default=0.01,
             help="minimum prediction threshold at which additional information is processed",
@@ -353,14 +352,7 @@ class Parser(argparse.ArgumentParser):
             "--out_prefix",
             type=str,
             default="results",
-            help="path (prefix) of output files",
-        )
-        pr_parse.add_argument(
-            "--output_type",
-            type=str,
-            default="npy",
-            choices=["npy", "h5"],
-            help="file type of raw model predictions",
+            help="path (prefix) of output files, ignored if using config input file",
         )
 
     def add_misc_args(self):
@@ -378,6 +370,10 @@ def parse_config_file(args):
     args.y_path = "tis"
     args.seqn_path = "contig"
     args.id_path = "id"
+    args.out_prefix = None
+    args.offsets = None
+    args.ribo_ids = []
+    args.cond = None
 
     # read dict and add to args
     with open(args.input_config, "r") as fh:
@@ -397,37 +393,53 @@ def parse_config_file(args):
     )
     cond_2 = ("ribo" in args) and (len(args.ribo) > 0)
     args.use_ribo = cond_1 or cond_2
-    args.ribo_shifts = {}
 
-    # ribo takes precedence over ribo_paths, can also includes read shifts
+    # ribo takes precedence over ribo_paths
     if args.use_ribo:
-        if cond_2:
-            if type(args.ribo) == dict:
-                args.ribo_ids = list(args.ribo.keys())
-                args.ribo_shifts = args.ribo
-            else:
-                args.ribo_ids = args.ribo
+        if "ribo" in args:
+            args.ribo_ids = [r if type(r) == list else [r] for r in args.ribo]
         else:
-            args.ribo_ids = list(args.ribo_paths.keys())
-    else:
-        args.ribo_ids = []
+            args.ribo_ids = [[r] for r in args.ribo_paths.keys()]
+        flat_ids = sum(args.ribo_ids, [])
+        assert len(np.unique(flat_ids)) == len(
+            flat_ids
+        ), "ribo_id is used multiple times"
 
-    # conditions used to remove transcripts from training data
-    if "cond" in input_config.keys():
-        args.cond = {k: eval(v) for k, v in input_config["cond"].items()}
-    else:
-        args.cond = None
-
-    # creates sets of merged (or solo) datasets based on merged input
-    if "merge" not in input_config.keys() or not args.use_ribo:
-        args.merge = []
-    args.merge_dict = {}
-    merg_mask = ~np.isin(
-        np.arange(len(args.ribo_ids)), list(itertools.chain(*args.merge))
+    # conditions used to remove transcripts from training/validation data
+    conds = {"global": {}, "grouped": [{} for l in range(len(args.ribo_ids))]}
+    conds["global"]["tr_len"] = lambda x: np.logical_and(
+        x > args.min_seq_len, x < args.max_seq_len
     )
-    for data_idx in np.where(merg_mask)[0]:
-        args.merge += [[data_idx]]
-    for i, set in enumerate(args.merge):
-        args.merge_dict[i] = set
+    if args.cond is not None:
+        if "ribo" in args.cond.keys() and args.use_ribo:
+            # key is overwritten if condition present for multiple group members
+            for key, item in args.cond["ribo"].items():
+                if type(item) == dict:
+                    # add condition to listed data sets
+                    for id, cond in item.items():
+                        grp_idx = [
+                            i for i, grp in enumerate(args.ribo_ids) if id in grp
+                        ]
+                        tmp_dict = {f"{key}": lambda x: eval(cond)}
+                        conds["grouped"][grp_idx[0]].update(tmp_dict)
+                else:
+                    # add condition to all groups
+                    for grp_idx, grp in enumerate(args.ribo_ids):
+                        tmp_dict = {f"{key}": lambda x: eval(item)}
+                        conds["grouped"][grp_idx].update(tmp_dict)
+            del args.cond["ribo"]
+        for key, item in args.cond.items():
+            if type(item) == dict:
+                # add condition to listed data sets
+                for id, cond in item.items():
+                    grp_idx = [i for i, grp in enumerate(args.ribo_ids) if id in grp]
+                    tmp_dict = {f"{key}": lambda x: eval(cond)}
+                    conds["grouped"][grp_idx[0]].update(tmp_dict)
+            else:
+                # add global condition
+                tmp_dict = {f"{key}": lambda x: eval(item)}
+                conds["global"].update(tmp_dict)
+
+    args.cond = conds
 
     return args

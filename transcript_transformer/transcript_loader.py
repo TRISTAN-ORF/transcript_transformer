@@ -5,45 +5,61 @@ from h5max import load_sparse
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
+
 def collate_fn(batch):
     """
-    custom collate function used for adding the predermined tokens 5 and 6 to every transcript 
-    sequence at the beginning and end. 
+    custom collate function used for adding the predermined tokens 5 and 6 to every transcript
+    sequence at the beginning and end.
     in addition, the varying input length sequences are padded using the predetermined token 7.
     These tokens are only processed as nucleotide embeddings, if these are used by the model.
     """
-    # In which cases is this true?
     if type(batch[0][0]) == list:
         batch = batch[0]
     lens = np.array([len(s) for s in batch[2]])
     max_len = max(lens)
 
-    y_b = torch.LongTensor(np.array(
-        [np.pad(y, (1, 1+l), constant_values=-1) for y, l in zip(batch[2], max_len - lens)]))
-
+    y_b = torch.LongTensor(
+        np.array(
+            [
+                np.pad(y, (1, 1 + l), constant_values=-1)
+                for y, l in zip(batch[2], max_len - lens)
+            ]
+        )
+    )
     x_dict = {}
     for k in batch[1][0].keys():
         # if the entries are multidimensional: positions , read lengths
         if len(batch[1][0][k].shape) > 1:
-            x_exp = [np.pad(x[k], ((1, 1), (0, 0)), constant_values=(
-                (0, 0), (0, 0))) for x in batch[1]]
-            x_exp = [np.pad(x.astype(float), ((0, l), (0, 0)), constant_values=(
-                (0, 0.5), (0, 0))) for x, l in zip(x_exp, max_len - lens)]
+            x_exp = [
+                np.pad(x[k], ((1, 1), (0, 0)), constant_values=((0, 0), (0, 0)))
+                for x in batch[1]
+            ]
+            x_exp = [
+                np.pad(
+                    x.astype(float),
+                    ((0, l), (0, 0)),
+                    constant_values=((0, 0.5), (0, 0)),
+                )
+                for x, l in zip(x_exp, max_len - lens)
+            ]
             x_dict[k] = torch.FloatTensor(np.array(x_exp, dtype=float))
 
         # if the entries are single dimensional and float: positions (reads)
         elif batch[1][0][k].dtype == float:
-            x_exp = [np.concatenate(([0], x[k], [0], [0.5]*l))
-                     for x, l in zip(batch[1], max_len - lens)]
-            x_dict[k] = torch.FloatTensor(
-                np.array(x_exp, dtype=float)).unsqueeze(-1)
+            x_exp = [
+                np.concatenate(([0], x[k], [0], [0.5] * l))
+                for x, l in zip(batch[1], max_len - lens)
+            ]
+            x_dict[k] = torch.FloatTensor(np.array(x_exp, dtype=float)).unsqueeze(-1)
 
         # if the entries are single dimensional and string: positions (nucleotides)
         else:
-            x_dict[k] = torch.LongTensor(np.array([np.concatenate(
-                ([5], x[k], [6], [7]*l)) for x, l in zip(batch[1], max_len - lens)], dtype=int))
+            arr = np.empty(shape=(len(batch[1]), max_len + 2), dtype=int)
+            for i, (x, l) in enumerate(zip(batch[1], max_len - lens)):
+                arr[i] = np.concatenate(([5], x[k], [6], [7] * l))
+            x_dict[k] = torch.LongTensor(arr)
 
-    x_dict.update({'x_id': batch[0], 'y': y_b})
+    x_dict.update({"x_id": batch[0], "y": y_b})
 
     return x_dict
 
@@ -81,16 +97,17 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
     num_samples = 0
     while len(data) > num_samples:
         # get lens of leftover transcripts
-        lens_set = lens[num_samples:num_samples+max_transcripts_per_batch]
+        lens_set = lens[num_samples : num_samples + max_transcripts_per_batch]
         # calculate memory based on number and length of samples (+2 for transcript start/stop token)
         num_samples_adj = np.multiply.accumulate(np.full(len(lens_set), 1.02))
-        if dataset in ['train']:
-            mask = (np.maximum.accumulate(lens_set+200)) * \
-                (np.arange(len(lens_set))+1) * num_samples_adj < max_memory
+        if dataset in ["train"]:
+            mask = (np.maximum.accumulate(lens_set + 200)) * (
+                np.arange(len(lens_set)) + 1
+            ) * num_samples_adj < max_memory
         else:
-            mask = (np.maximum.accumulate(lens_set+200)) * \
-                (np.arange(len(lens_set))+1) * \
-                num_samples_adj * 0.75 < max_memory
+            mask = (np.maximum.accumulate(lens_set + 200)) * (
+                np.arange(len(lens_set)) + 1
+            ) * num_samples_adj * 0.75 < max_memory
         # obtain position where mem > max_memory
         # get idx to split
         if sum(mask) > 0:
@@ -98,8 +115,10 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
             num_samples += samples_d
             l.append(num_samples)
         else:
-            print(f"{len(data)-num_samples} ({(1-num_samples/len(data))*100:.2f}%) samples removed from {dataset} set because of memory constraints, "
-                  "adjust max_memory to address behavior")
+            print(
+                f"{len(data)-num_samples} ({(1-num_samples/len(data))*100:.2f}%) samples removed from {dataset} set because of memory constraints, "
+                "adjust max_memory to address behavior"
+            )
             data = data[:num_samples]
             lens = lens[:num_samples]
 
@@ -111,15 +130,30 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
 
 
 class h5pyDataModule(pl.LightningDataModule):
-    def __init__(self, h5_path, exp_path, y_path, tr_id_path, seqn_path, use_seq, ribo_ids, ribo_shifts, ribo_offset, merge_dict, train=[], 
-                 val=[], test=[], max_memory=24000, max_transcripts_per_batch=500, min_seq_len=0, max_seq_len=30000, num_workers=5,
-                 cond_fs=None, leaky_frac=0.05, collate_fn=collate_fn):
+    def __init__(
+        self,
+        h5_path,
+        exp_path,
+        y_path,
+        tr_id_path,
+        seqn_path,
+        use_seq,
+        ribo_ids,
+        offsets,
+        train=[],
+        val=[],
+        test=[],
+        strict_validation=False,
+        max_memory=24000,
+        max_transcripts_per_batch=500,
+        num_workers=5,
+        cond=None,
+        leaky_frac=0.05,
+        collate_fn=collate_fn,
+    ):
         super().__init__()
         self.ribo_ids = ribo_ids
-        self.ribo_shifts = ribo_shifts
-        self.ribo_offset = ribo_offset
-        if ribo_offset:
-            assert len(ribo_shifts) > 0, f"No offset values present in ribo_ids input, check the input config file"
+        self.offsets = offsets
         # support for training on multiple datasets
         self.n_data = max(len(self.ribo_ids), 1)
         self.use_seq = use_seq
@@ -128,104 +162,120 @@ class h5pyDataModule(pl.LightningDataModule):
         self.h5_path = h5_path
         self.exp_path = exp_path
         self.seqn_path = seqn_path
-        self.merge_dict = merge_dict
+        train = [t.encode("ascii") if type(t) is str else t for t in train]
+        val = [t.encode("ascii") if type(t) is str else t for t in val]
+        test = [t.encode("ascii") if type(t) is str else t for t in test]
         self.seqns = {
-            'train': np.ravel([train]),
-            'val' : np.ravel([val]),
-            'test' : np.ravel([test])
+            "train": np.array(train),
+            "val": np.array(val),
+            "test": np.array(test),
         }
+        self.strict_validation = strict_validation
         self.max_memory = max_memory
         self.max_transcripts_per_batch = max_transcripts_per_batch
-        self.max_seq_len = max_seq_len
-        self.min_seq_len = min_seq_len
         self.num_workers = num_workers
-        self.cond_fs = cond_fs
+        if cond == None:
+            self.cond = {"global": {}, "grouped": [{}] * len(ribo_ids)}
+        else:
+            self.cond = cond
         self.leaky_frac = leaky_frac
         self.collate_fn = collate_fn
 
     def setup(self, stage=None):
-        self.fh = h5py.File(self.h5_path, 'r')[self.exp_path]
-        # filter data
-        tr_lens = np.array(self.fh['tr_len'])
-        self.seq_len_mask = np.logical_and(
-            tr_lens < self.max_seq_len, tr_lens > self.min_seq_len)
+        self.fh = h5py.File(self.h5_path, "r")[self.exp_path]
 
-        # TODO: custom conditions needs a rewrite
-        self.global_cond_mask = np.full_like(self.seq_len_mask, True)
-        if len(self.ribo_ids) > 0 and len(self.ribo_ids) == len(self.merge_dict):
-            cond = {key: np.full_like(self.seq_len_mask, True)
-                    for key in self.ribo_ids}
-            cond_eval = cond.copy()
-            # currently, custom masks is disabled for merged option to avoid conflicts
-            if self.cond_fs is not None:
-                ribo_path_keys = self.ribo_ids
-                for key, cond_f in self.cond_fs.items():
-                    is_cond_ribo = np.core.defchararray.find(
-                        key, ribo_path_keys) != -1
-                    temp_mask = cond_f(np.array(self.fh[key]))
-                    if self.leaky_frac > 0:
-                        leaky_mask = np.random.uniform(
-                            size=self.seq_len_mask.shape) > (1-self.leaky_frac)
-                        temp_mask[leaky_mask] = True
-                    # apply mask to specific ribo data
-                    if is_cond_ribo.any():
-                        cond[np.array(ribo_path_keys)[
-                            is_cond_ribo][0]] = temp_mask
-                    # apply mask to all data
-                    else:
-                        self.global_cond_mask = np.logical_and(
-                            self.global_cond_mask, temp_mask)
-        elif len(self.ribo_ids) > 0:
-            cond = {key: np.full_like(self.seq_len_mask, True)
-                    for key in self.merge_dict.keys()}
-            cond_eval = cond.copy()
-        else:
-            cond = {'seq': np.full_like(self.seq_len_mask, True)}
-            cond_eval = cond.copy()
-        
+        # evaluate conditions
+        global_masks = []
+        for key, cond_f in self.cond["global"].items():
+            mask = cond_f(np.array(self.fh[key]))
+            if (key != "tr_len") and (self.leaky_frac > 0):
+                prob_mask = np.random.uniform(size=len(mask)) > (1 - self.leaky_frac)
+                mask[prob_mask] = True
+            global_masks.append(mask)
+        global_mask = np.logical_and.reduce(global_masks)
+
+        group_masks = []
+        for group in self.cond["grouped"]:
+            group_mask = [np.full_like(global_mask, True)]
+
+            for grp_idx, (key, cond_f) in enumerate(group.items()):
+                grouped_feature = np.add.reduce(
+                    [
+                        np.array(self.fh[f"riboseq/{id}/5/{key}"])
+                        for id in self.ribo_ids[grp_idx]
+                    ]
+                )
+                mask = cond_f(grouped_feature)
+                if (key != "tr_len") and (self.leaky_frac > 0):
+                    prob_mask = np.random.uniform(size=len(mask)) > (
+                        1 - self.leaky_frac
+                    )
+                    mask[prob_mask] = True
+                group_mask.append(mask)
+            group_masks.append(np.logical_and.reduce(group_mask))
+
+        # derive train/validation/test sets
         has_train_seqns = len(self.seqns["train"]) > 0
         has_val_seqns = len(self.seqns["val"]) > 0
         has_test_seqns = len(self.seqns["test"]) > 0
-        if (not has_train_seqns) or (not has_val_seqns) or (not has_test_seqns):
-            filled_sets = sum([has_train_seqns, has_val_seqns, has_test_seqns])
-            assert filled_sets == 2, "only one set (train/test/val) can be left empty"
-            seqns = np.unique(self.fh[self.seqn_path]).astype(str)
+        filled_sets = sum([has_train_seqns, has_val_seqns, has_test_seqns])
+        if filled_sets == 2:
+            seqns = np.unique(self.fh[self.seqn_path])
             if len(self.seqns["train"]) == 0:
-                self.seqns["train"] = np.setdiff1d(seqns, np.hstack((self.seqns["val"], self.seqns["test"])))
+                self.seqns["train"] = np.setdiff1d(
+                    seqns, np.hstack((self.seqns["val"], self.seqns["test"]))
+                )
             elif len(self.seqns["val"]) == 0:
-                self.seqns["val"] = np.setdiff1d(seqns, np.hstack((self.seqns["train"], self.seqns["test"])))
+                self.seqns["val"] = np.setdiff1d(
+                    seqns, np.hstack((self.seqns["train"], self.seqns["test"]))
+                )
             else:
-                self.seqns["test"] = np.setdiff1d(seqns, np.hstack((self.seqns["train"], self.seqns["val"])))
-        
-        print(f"Training seqnames: {self.seqns['train']}")
-        print(f"Validation seqnames: {self.seqns['val']}")
-        print(f"Test seqnames: {self.seqns['test']}")
+                self.seqns["test"] = np.setdiff1d(
+                    seqns, np.hstack((self.seqns["train"], self.seqns["val"]))
+                )
 
         if stage == "fit" or stage is None:
-            seqn_mask = np.isin(self.fh[self.seqn_path], np.array(
-                self.seqns["train"]).astype('S'))
-            mask = np.logical_and.reduce(
-                [self.global_cond_mask, seqn_mask, self.seq_len_mask])
+            print(f"--> Training seqnames: {[t.decode() for t in self.seqns['train']]}")
+            print(f"--> Validation seqnames: {[t.decode() for t in self.seqns['val']]}")
+            if len(self.seqns["test"]) > 0:
+                print(f"--> Test seqnames: {[t.decode() for t in self.seqns['test']]}")
+            # train set
+            seqn_mask = np.isin(self.fh[self.seqn_path], np.array(self.seqns["train"]))
+            mask = np.logical_and(global_mask, seqn_mask)
             self.tr_idx, self.tr_len, self.tr_idx_adj = self.prepare_sets(
-                mask, cond)
-            print(f"Training set transcripts: {len(self.tr_idx)}")
-            seqn_mask = np.isin(self.fh[self.seqn_path],
-                                  self.seqns["val"].astype('S'))
-            self.val_idx, self.val_len, self.val_idx_adj = self.prepare_sets(
-                np.logical_and(seqn_mask, self.seq_len_mask), cond_eval)
-            print(f"Validation set transcripts: {len(self.val_idx)}")
+                mask, group_masks
+            )
+            print(f"--> Training set transcripts: {len(self.tr_idx)}")
+            # validation set
+            seqn_mask = np.isin(self.fh[self.seqn_path], self.seqns["val"])
+            if self.strict_validation:
+                # global_masks[0] is transcript length maskq
+                mask = np.logical_and(seqn_mask, global_masks[0])
+                self.val_idx, self.val_len, self.val_idx_adj = self.prepare_sets(
+                    mask, [np.full_like(mask, True)] * len(group_masks)
+                )
+            else:
+                mask = np.logical_and(global_mask, seqn_mask)
+                self.val_idx, self.val_len, self.val_idx_adj = self.prepare_sets(
+                    mask, group_masks
+                )
+            print(f"--> Validation set transcripts: {len(self.val_idx)}")
         if stage in ["test", "predict"] or stage is None:
-            seqn_mask = np.isin(self.fh[self.seqn_path],
-                                  self.seqns["test"].astype('S'))
+            print(f"--> Test seqnames: {[t.decode() for t in self.seqns['test']]}")
+            seqn_mask = np.isin(self.fh[self.seqn_path], self.seqns["test"])
+            # mask = np.logical_and(seqn_mask, global_masks[0])
+            mask = np.logical_and(seqn_mask, global_masks[0])
             self.te_idx, self.te_len, self.te_idx_adj = self.prepare_sets(
-                np.logical_and(seqn_mask, self.seq_len_mask), cond_eval)
-            print(f"Test set transcripts: {len(self.te_idx)}")
+                mask,
+                [np.full_like(seqn_mask, True)] * len(group_masks),
+            )
+            print(f"--> Test set transcripts: {len(self.te_idx)}")
 
-    def prepare_sets(self, mask, cond):
+    def prepare_sets(self, mask, group_conds):
         mask_set = []
         len_set = []
-        tr_len = np.array(self.fh['tr_len'])
-        for _, cond_mask in cond.items():
+        tr_len = np.array(self.fh["tr_len"])
+        for cond_mask in group_conds:
             mask_set.append(np.logical_and(cond_mask, mask))
             len_set.append(tr_len[mask_set[-1]])
         mask_all = np.hstack(mask_set)
@@ -236,52 +286,124 @@ class h5pyDataModule(pl.LightningDataModule):
         return idxs[sort_idxs], lens[sort_idxs], len(mask)
 
     def train_dataloader(self):
-        batches = bucket(*local_shuffle(self.tr_idx, self.tr_len),
-                         self.max_memory, self.max_transcripts_per_batch, 'train')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.tr_idx_adj, batches, self.merge_dict),
-                          collate_fn=collate_fn, num_workers=self.num_workers, shuffle=True, batch_size=1)
+        batches = bucket(
+            *local_shuffle(self.tr_idx, self.tr_len),
+            self.max_memory,
+            self.max_transcripts_per_batch,
+            "train",
+        )
+        return DataLoader(
+            h5pyDatasetBatches(
+                self.fh,
+                self.y_path,
+                self.tr_id_path,
+                self.use_seq,
+                self.ribo_ids,
+                self.offsets,
+                self.tr_idx_adj,
+                batches,
+            ),
+            collate_fn=collate_fn,
+            num_workers=self.num_workers,
+            shuffle=True,
+            batch_size=1,
+        )
 
     def val_dataloader(self):
-        batches = bucket(self.val_idx, self.val_len,
-                         self.max_memory, self.max_transcripts_per_batch, 'val')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.val_idx_adj, batches, self.merge_dict),
-                          collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
+        batches = bucket(
+            self.val_idx,
+            self.val_len,
+            self.max_memory,
+            self.max_transcripts_per_batch,
+            "val",
+        )
+        return DataLoader(
+            h5pyDatasetBatches(
+                self.fh,
+                self.y_path,
+                self.tr_id_path,
+                self.use_seq,
+                self.ribo_ids,
+                self.offsets,
+                self.val_idx_adj,
+                batches,
+            ),
+            collate_fn=self.collate_fn,
+            num_workers=self.num_workers,
+            batch_size=1,
+        )
 
     def test_dataloader(self):
-        batches = bucket(self.te_idx, self.te_len, self.max_memory,
-                         self.max_transcripts_per_batch, 'test')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
-                          collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
+        batches = bucket(
+            self.te_idx,
+            self.te_len,
+            self.max_memory,
+            self.max_transcripts_per_batch,
+            "test",
+        )
+        return DataLoader(
+            h5pyDatasetBatches(
+                self.fh,
+                self.y_path,
+                self.tr_id_path,
+                self.use_seq,
+                self.ribo_ids,
+                self.offsets,
+                self.te_idx_adj,
+                batches,
+            ),
+            collate_fn=self.collate_fn,
+            num_workers=self.num_workers,
+            batch_size=1,
+        )
 
     def predict_dataloader(self):
-        batches = bucket(self.te_idx, self.te_len, self.max_memory,
-                         self.max_transcripts_per_batch, 'test')
-        return DataLoader(h5pyDatasetBatches(self.fh, self.y_path, self.tr_id_path, self.use_seq, self.ribo_ids, self.ribo_shifts, self.ribo_offset, self.te_idx_adj, batches, self.merge_dict),
-                          collate_fn=self.collate_fn, num_workers=self.num_workers, batch_size=1)
+        batches = bucket(
+            self.te_idx,
+            self.te_len,
+            self.max_memory,
+            self.max_transcripts_per_batch,
+            "test",
+        )
+        return DataLoader(
+            h5pyDatasetBatches(
+                self.fh,
+                self.y_path,
+                self.tr_id_path,
+                self.use_seq,
+                self.ribo_ids,
+                self.offsets,
+                self.te_idx_adj,
+                batches,
+            ),
+            collate_fn=self.collate_fn,
+            num_workers=self.num_workers,
+            batch_size=1,
+        )
 
 
 class h5pyDatasetBatches(torch.utils.data.Dataset):
-    def __init__(self, fh, y_path, tr_id_path, use_seq, ribo_ids, ribo_shifts, ribo_offset, idx_adj, batches, merge_dict):
+    def __init__(
+        self,
+        fh,
+        y_path,
+        tr_id_path,
+        use_seq,
+        ribo_ids,
+        offsets,
+        idx_adj,
+        batches,
+    ):
         super().__init__()
         self.fh = fh
         self.ribo_ids = ribo_ids
-        # backward compatibility
-        self.ribo_paths = []
-        for ribo_id in ribo_ids:
-            frags = ribo_id.split('/')
-            if frags[0] != 'riboseq' or frags[-1] != '5':
-                frags.insert(0, 'riboseq')
-                frags.append('5')
-            self.ribo_paths.append('/'.join(frags))
-        self.ribo_shifts = ribo_shifts
         self.y_path = y_path
         self.tr_id_path = tr_id_path
         self.use_seq = use_seq
-        self.ribo_offset = ribo_offset
+        self.offsets = offsets
         self.idx_adj = idx_adj
         self.batches = batches
-        self.merge_dict = merge_dict
-        
+
     def __len__(self):
         return len(self.batches)
 
@@ -296,21 +418,26 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             x_dict = {}
             # get seq data
             if self.use_seq:
-                x_dict['seq'] = self.fh['seq'][idx]
+                if len(self.fh["seq"][idx]) == 0:
+                    print(idx, index)
+                    print(self.fh["seq"][idx])
+                x_dict["seq"] = self.fh["seq"][idx]
                 id_prefix = ""
             # get ribo data
-            if len(self.ribo_ids) > 0:
+            else:
                 # obtain data set and adjuster
-                set_idx = idx_conc//self.idx_adj
-                merged_ribo_idxs = self.merge_dict[set_idx]
+                set_idx = idx_conc // self.idx_adj
                 x_merge = []
-                for i, ribo_idx in enumerate(merged_ribo_idxs):
-                    ribo_id = self.ribo_paths[ribo_idx]
+                ribo_set = self.ribo_ids[set_idx]
+                for i, ribo_id in enumerate(ribo_set):
                     if i == 0:
-                        id_prefix = self.ribo_ids[ribo_idx] + "|"
-                    x = load_sparse(self.fh[ribo_id], idx, format='csr').T
-                    if self.ribo_offset:
-                        for col_i, (_, shift) in enumerate(self.ribo_shifts[ribo_id].items()):
+                        id_prefix = "@".join(ribo_set) + "|"
+                    ribo_path = f"riboseq/{ribo_id}/5"
+                    x = load_sparse(self.fh[ribo_path], idx, format="csr").T
+                    if self.offsets is not None:
+                        for col_i, (_, shift) in enumerate(
+                            self.offsets[ribo_id].items()
+                        ):
                             if (shift != 0) and (shift > 0):
                                 x[:shift, col_i] = 0
                                 x[shift:, col_i] = x[:-shift, col_i]
@@ -322,14 +449,14 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
                     x_merge.append(x)
                 # sum over multiple data sets (when applicable)
                 x = np.sum(x_merge, axis=0)
-                if self.ribo_offset:
+                if self.offsets is not None:
                     # normalize including all positions,reads
-                    x_dict['ribo'] = x/np.maximum(x.max(), 1)
+                    x_dict["ribo"] = x / np.maximum(x.max(), 1)
                 else:
                     # normalize including all positions,reads
-                    x_dict['ribo'] = x/np.maximum(np.sum(x, axis=1).max(), 1)
+                    x_dict["ribo"] = x / np.maximum(np.sum(x, axis=1).max(), 1)
             # get transcript IDs
-            x_ids.append(id_prefix.encode() + self.fh[self.tr_id_path][idx])    
+            x_ids.append(id_prefix.encode() + self.fh[self.tr_id_path][idx])
             xs.append(x_dict)
             ys.append(self.fh[self.y_path][idx])
         return [x_ids, xs, ys]
@@ -347,7 +474,7 @@ class DNADatasetBatches(torch.utils.data.Dataset):
     def __getitem__(self, index):
         # Transformation is performed when a sample is requested
         x_ids = [self.ids[index]]
-        xs = [{'seq': self.xs[index]}]
+        xs = [{"seq": self.xs[index]}]
         ys = [np.ones_like(self.xs[index])]
 
         return [x_ids, xs, ys]
