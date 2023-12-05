@@ -374,7 +374,7 @@ def parse_ribo_reads(df, read_lens, f_ids, f_lens):
     arg_sort = f_ids.arg_sort()
     h5_idxs = arg_sort[f_ids[arg_sort].search_sorted(id_lib)]
     for idx, (_, group) in tqdm(
-        zip(h5_idxs, df.groupby("tr_ID", maintain_order=True)),
+        zip(h5_idxs, df.group_by("tr_ID", maintain_order=True)),
         total=len(id_lib),
     ):
         tr_reads = np.zeros((num_read_lens, f_lens[idx]), dtype=np.int32)

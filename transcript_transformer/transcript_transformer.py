@@ -13,6 +13,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
+from pdb import set_trace
 from transcript_transformer.models import TranscriptSeqRiboEmb
 from transcript_transformer.transcript_loader import (
     h5pyDataModule,
@@ -302,23 +303,26 @@ def predict(args, trainer=None, model=None, postprocess=True):
         if args.input_type == "RNA":
             tr_seqs = args.input_data.upper()
             x_data = [DNA2vec(tr_seqs)]
-            tr_ids = "seq_1"
+            tr_ids = ["seq_1"]
         elif args.input_type == "fa":
             tr_ids = []
             tr_seqs = []
             for item in read_fasta(args.input_data):
-                if len(item.sequence) > args.max_seq_len:
+                if len(item.sequence) < args.max_seq_len:
                     tr_ids.append(item.defline)
                     tr_seqs.append(item.sequence.upper())
                 else:
-                    f"Sequence {item.defline} is longer than {args.max_seq_line}, ommiting..."
+                    f"Sequence {item.defline} is longer than {args.max_seq_len}, ommiting..."
+            assert len(tr_seqs) > 0, "no valid sequences in fasta"
             x_data = [DNA2vec(seq) for seq in tr_seqs]
+        set_trace()
         tr_loader = DataLoader(
             DNADatasetBatches(tr_ids, x_data), collate_fn=collate_fn, batch_size=1
         )
 
     print("\nRunning sequences through model")
     out = trainer.predict(model, dataloaders=tr_loader, ckpt_path=ckpt_path)
+    set_trace()
     ids = list(itertools.chain(*[o[2] for o in out]))
     preds = list(itertools.chain(*[o[0] for o in out]))
 
@@ -334,7 +338,9 @@ def predict(args, trainer=None, model=None, postprocess=True):
             df = process_seq_preds(ids, preds, tr_seqs, args.min_prob)
             print(df)
             df.to_csv(f"{args.out_prefix}.csv", index=None)
-            print(f"\nSites of interest saved to '{args.out_prefix}.csv'")
+            print(f"\n--> Sites of interest saved to '{args.out_prefix}.csv'")
+        else:
+            print(f"\n--> No sites of interest found (omitted creation of '{args.out_prefix}.csv')")
 
     np.save(
         f"{args.out_prefix}.npy",

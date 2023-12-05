@@ -4,8 +4,6 @@ from datetime import datetime
 from tqdm import tqdm
 import pandas as pd
 
-from pdb import set_trace
-
 cdn_prot_dict = {
     "ATA": "I",
     "ATC": "I",
@@ -191,7 +189,6 @@ def construct_output_table(
     ribo=None,
 ):
     f_tr_ids = np.array(f["id"])
-    set_trace()
     has_seq_output = "seq_output" in f.keys()
     has_ribo_output = ribo is not None
     assert has_seq_output or has_ribo_output, "no model predictions found"
@@ -412,7 +409,7 @@ def process_seq_preds(ids, preds, seqs, min_prob):
             "output",
             "start_codon",
             "TTS_pos",
-            "TTS_codon",
+            "stop_codon",
             "TTS_on_transcript",
             "prot_len",
             "prot_seq",
@@ -423,7 +420,7 @@ def process_seq_preds(ids, preds, seqs, min_prob):
     for i, idxs in enumerate(mask):
         tr = seqs[i]
         for idx in idxs:
-            prot_seq, has_stop = construct_prot(tr[idx:])
+            prot_seq, has_stop, stop_codon = construct_prot(tr[idx:])
             TTS_pos = idx + len(prot_seq) * 3
             df.loc[num] = [
                 ids[i][0],
@@ -432,7 +429,7 @@ def process_seq_preds(ids, preds, seqs, min_prob):
                 preds[i][idx],
                 tr[idx : idx + 3],
                 TTS_pos,
-                tr[TTS_pos : TTS_pos + 3],
+                stop_codon,
                 has_stop,
                 len(prot_seq),
                 prot_seq,
