@@ -84,18 +84,6 @@ ribo_paths :
 h5_path : my_experiment.h5
 ```
 
-When applying a model it is required to specify whether sequence information is used (e.g. for TIS transformer).
-
-```yaml
-########################################################
-## For models using transcript sequence data.
-## This setting is used by the TIS-transformer.
-## Set to false when training on ribo-seq data
-########################################################
-seq : false
-
-```
-
 Several other options exist that specify how ribosome profiling data is loaded. Refer to [`template.yml`](https://github.com/jdcla/transcript_transformer/blob/main/template.yml), available in the root directory of this repository, for more information on each option. 
 
 ### pretrain
