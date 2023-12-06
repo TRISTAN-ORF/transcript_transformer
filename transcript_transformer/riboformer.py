@@ -43,13 +43,6 @@ def parse_args():
         help="number of codons to search up- and downstream for an ATG (see also --no_correction)",
     )
     parser.add_argument(
-        "--train_seq_model",
-        action="store_true",
-        help="Train additional model for ORF detection that applies sequence info only. "
-        "See TIS Transformer (https://doi.org/10.1093/nargab/lqad021) for more info. "
-        "TIS Transformer predictions are given in output table under seq_model_pred.",
-    )
-    parser.add_argument(
         "--data",
         action="store_true",
         help="only perform pre-processing of data",

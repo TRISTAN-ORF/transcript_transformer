@@ -10,7 +10,7 @@ from argparse import Namespace
 from transcript_transformer.transcript_transformer import train, predict
 from transcript_transformer.argparser import Parser, parse_config_file
 from transcript_transformer.pretrained import tis_transformer_models
-from transcript_transformer.data import process_seq_data, process_ribo_data
+from transcript_transformer.data import process_seq_data
 from transcript_transformer.processing import construct_output_table
 
 
