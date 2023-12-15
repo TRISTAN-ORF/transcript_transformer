@@ -171,7 +171,7 @@ def parse_transcriptome(gtf_path, fa_path):
     print("Loading assembly data...")
     genome = pyfaidx.Fasta(fa_path)
     contig_list = pd.Series(genome.keys())
-    gtf = read_gtf(gtf_path)
+    gtf = read_gtf(gtf_path, result_type="polars")
     gtf = gtf.with_columns(pl.col("exon_number").cast(pl.Int32, strict=False))
     headers = {
         "transcript_id": "id",
