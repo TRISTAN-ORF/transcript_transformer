@@ -4,6 +4,7 @@ from datetime import datetime
 from tqdm import tqdm
 import pandas as pd
 
+
 cdn_prot_dict = {
     "ATA": "I",
     "ATC": "I",
@@ -96,7 +97,8 @@ headers = [
 
 out_headers = [
     "seqname",
-    "id",
+    "orf_id",
+    "tr_id",
     "TIS_pos",
     "output",
     "output_rank",
@@ -136,7 +138,7 @@ out_headers = [
 
 decode = [
     "seqname",
-    "id",
+    "tr_id",
     "biotype",
     "support_lvl",
     "tag",
@@ -186,6 +188,7 @@ def construct_output_table(
     prob_cutoff=0.05,
     correction=False,
     dist=9,
+    remove_duplicates=True,
     ribo=None,
 ):
     f_tr_ids = np.array(f["id"])
@@ -221,12 +224,6 @@ def construct_output_table(
         idx_tr = np.where(cum_lens > idx)[0][0] - 1
         data_dict["TIS_idx"].append(idx - cum_lens[idx_tr])
         data_dict["f_idx"].append(pred_to_h5_args[idx_tr])
-    if has_seq_output:
-        seq_out = [
-            f["seq_output"][i][j]
-            for i, j in zip(data_dict["f_idx"], data_dict["TIS_idx"])
-        ]
-        data_dict.update({"seq_output": seq_out})
     data_dict.update(
         {
             f"{header}": np.array(f[f"{header}"])[data_dict["f_idx"]]
@@ -235,6 +232,7 @@ def construct_output_table(
     )
     data_dict.update(data_dict)
     df_out = pd.DataFrame(data=data_dict)
+    df_out=df_out.rename(columns = {'id':'tr_id'})
     df_out["correction"] = np.nan
 
     data_dict = {
@@ -256,7 +254,7 @@ def construct_output_table(
     for i, row in tqdm(
         df_out.iterrows(),
         total=len(df_out),
-        desc=f"{time()}: parsing ORF information ",
+        desc=f"{time()}: parsing ORF information "
     ):
         tr_seq = f["seq"][row.f_idx]
         TIS_idx = row.TIS_idx
@@ -310,7 +308,6 @@ def construct_output_table(
     df_out = df_out.assign(**data_dict)
     df_out["TIS_idx"] = TIS_idxs
     df_out["correction"] = corrections
-
     df_out["seqname"] = df_out["contig"]
     df_out["TIS_pos"] = df_out["TIS_idx"] + 1
     df_out["output"] = preds[idxs]
@@ -320,6 +317,13 @@ def construct_output_table(
     df_out["dist_from_canonical_TIS"] = df_out["TIS_idx"] - df_out["canonical_TIS_idx"]
     df_out.loc[df_out["canonical_TIS_idx"] == -1, "dist_from_canonical_TIS"] = np.nan
     df_out["frame_wrt_canonical_TIS"] = df_out["dist_from_canonical_TIS"] % 3
+    
+    if has_seq_output:
+        seq_out = [
+            f["seq_output"][i][j]
+            for i, j in zip(data_dict["f_idx"], data_dict["TIS_idx"])
+        ]
+        data_dict.update({"seq_output": seq_out})
 
     if has_ribo_output:
         ribo_subsets = np.array(ribo_id.split(b"@"))
@@ -390,13 +394,19 @@ def construct_output_table(
                 orf_type.append("CDS variant")
             else:
                 orf_type.append("other")
-
     df_out["ORF_type"] = orf_type
     df_out.loc[df_out["biotype"] == b"lncRNA", "ORF_type"] = "lncRNA-ORF"
-    o_headers = [h for h in out_headers if h in df_out.columns]
-    df_out = df_out.loc[:, o_headers].sort_values("output_rank")
+    # decode strs
     for header in decode:
         df_out[header] = df_out[header].str.decode("utf-8")
+    df_out["orf_id"] = df_out["tr_id"] + "_" + df_out["TIS_pos"].astype(str)
+    # re-arrange columns
+    o_headers = [h for h in out_headers if h in df_out.columns]
+    df_out = df_out.loc[:, o_headers].sort_values("output_rank")
+    # remove duplicates
+    if correction and remove_duplicates:
+        df_out = df_out.drop_duplicates("orf_id")
+
     df_out.to_csv(f"{out_prefix}.csv", index=None)
 
 
