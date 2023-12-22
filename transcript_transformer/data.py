@@ -154,6 +154,8 @@ def save_transcriptome_to_h5(f, data_dict):
             "support_lvl",
             "canonical_prot_id",
         ]:
+            if key != "id":
+                array = [a if a!=None else "" for a in array]
             grp.create_dataset(
                 key, data=array, dtype=f"<S{max(1,max([len(s) for s in array]))}"
             )
