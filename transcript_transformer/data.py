@@ -108,7 +108,7 @@ def process_ribo_data(h5_path, ribo_paths, overwrite=False, low_memory=False):
                 comment_char="@",
                 columns=[2, 3, 9],
                 dtypes=[pl.Utf8, pl.Int32, pl.Utf8],
-                sep="\t",
+                separator="\t",
                 low_memory=low_memory,
             )
         elif file_ext == ".bam":
