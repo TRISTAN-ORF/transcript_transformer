@@ -246,6 +246,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 mask, group_masks
             )
             print(f"--> Training set transcripts: {len(self.tr_idx)}")
+            assert len(self.tr_idx) > 0, "No transcripts in training data"
             # validation set
             seqn_mask = np.isin(self.fh[self.seqn_path], self.seqns["val"])
             if self.strict_validation:
@@ -260,6 +261,7 @@ class h5pyDataModule(pl.LightningDataModule):
                     mask, group_masks
                 )
             print(f"--> Validation set transcripts: {len(self.val_idx)}")
+            assert len(self.val_idx) > 0, "No transcripts in validation data"
         if stage in ["test", "predict"] or stage is None:
             print(f"--> Test seqnames: {[t.decode() for t in self.seqns['test']]}")
             seqn_mask = np.isin(self.fh[self.seqn_path], self.seqns["test"])
@@ -270,6 +272,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 [np.full_like(seqn_mask, True)] * len(group_masks),
             )
             print(f"--> Test set transcripts: {len(self.te_idx)}")
+            assert len(self.te_idx) > 0, "No transcripts in test data"
 
     def prepare_sets(self, mask, group_conds):
         mask_set = []
