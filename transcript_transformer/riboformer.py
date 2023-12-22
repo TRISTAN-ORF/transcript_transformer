@@ -43,6 +43,11 @@ def parse_args():
         help="number of codons to search up- and downstream for an ATG (see also --no_correction)",
     )
     parser.add_argument(
+        "--keep_duplicates",
+        action="store_true",
+        help="don't remove duplicate ORFs resulting from the correction step",
+    )
+    parser.add_argument(
         "--data",
         action="store_true",
         help="only perform pre-processing of data",
@@ -119,13 +124,14 @@ def main():
             ribo_set_str = "@".join(ribo_set)
             out = np.load(f"{args.out_prefix}_{ribo_set_str}.npy", allow_pickle=True)
             construct_output_table(
-                f["transcript"],
-                f"{args.out_prefix}_{ribo_set_str}",
-                args.factor,
-                args.prob_cutoff,
-                ~args.no_correction,
-                args.distance,
-                out,
+                f = f["transcript"],
+                out_prefix = f"{args.out_prefix}_{ribo_set_str}",
+                factor = args.factor,
+                prob_cutoff = args.prob_cutoff,
+                correction = ~args.no_correction,
+                dist = args.distance,
+                remove_duplicates = ~args.keep_duplicates,
+                ribo = out,
             )
         f.close()
 

@@ -108,14 +108,14 @@ out_headers = [
     "ORF_len",
     "TTS_pos",
     "TTS_on_transcript",
-    "reads_per_base",
-    "rpb_in_ORF",
-    "rpb_out_ORF",
+    "reads_in_tr",
+    "reads_in_ORF",
+    "reads_out_ORF",
     "in_frame_read_perc",
     "ORF_type",
-    "biotype",
-    "support_lvl",
-    "tag",
+    "tr_biotype",
+    "tr_support_lvl",
+    "tr_tag",
     "tr_len",
     "dist_from_canonical_TIS",
     "frame_wrt_canonical_TIS",
@@ -139,9 +139,9 @@ out_headers = [
 decode = [
     "seqname",
     "tr_id",
-    "biotype",
-    "support_lvl",
-    "tag",
+    "tr_biotype",
+    "tr_support_lvl",
+    "tr_tag",
     "strand",
     "gene_id",
     "gene_name",
@@ -219,23 +219,32 @@ def construct_output_table(
     cum_lens = np.cumsum(np.insert(lens, 0, 0))
     idxs = np.argpartition(preds, -k)[-k:]
 
-    data_dict = {"f_idx": [], "TIS_idx": []}
+    orf_dict = {"f_idx": [], "TIS_idx": []}
     for idx in idxs:
         idx_tr = np.where(cum_lens > idx)[0][0] - 1
-        data_dict["TIS_idx"].append(idx - cum_lens[idx_tr])
-        data_dict["f_idx"].append(pred_to_h5_args[idx_tr])
-    data_dict.update(
+        orf_dict["TIS_idx"].append(idx - cum_lens[idx_tr])
+        orf_dict["f_idx"].append(pred_to_h5_args[idx_tr])
+    if has_seq_output:
+        seq_out = [
+            f["seq_output"][i][j]
+            for i, j in zip(orf_dict["f_idx"], orf_dict["TIS_idx"])
+        ]
+        orf_dict.update({"seq_output": seq_out})
+    orf_dict.update(
         {
-            f"{header}": np.array(f[f"{header}"])[data_dict["f_idx"]]
+            f"{header}": np.array(f[f"{header}"])[orf_dict["f_idx"]]
             for header in headers
         }
     )
-    data_dict.update(data_dict)
-    df_out = pd.DataFrame(data=data_dict)
-    df_out=df_out.rename(columns = {'id':'tr_id'})
+    orf_dict.update(orf_dict)
+    df_out = pd.DataFrame(data=orf_dict)
+    df_out=df_out.rename(columns = {"id":"tr_id",
+                                    "support_lvl" : "tr_support_lvl",
+                                    "biotype" : "tr_biotype",
+                                    "tag" : "tr_tag"})
     df_out["correction"] = np.nan
 
-    data_dict = {
+    df_dict = {
         "start_codon": [],
         "stop_codon": [],
         "prot": [],
@@ -275,12 +284,12 @@ def construct_output_table(
                 TIS_idx = TIS_idx + match
                 TIS_idxs[row.name] = TIS_idx
         DNA_frag = vec2DNA(tr_seq[TIS_idx:])
-        data_dict["start_codon"].append(DNA_frag[:3])
+        df_dict["start_codon"].append(DNA_frag[:3])
         prot, has_stop, stop_codon = construct_prot(DNA_frag)
-        data_dict["stop_codon"].append(stop_codon)
-        data_dict["prot"].append(prot)
-        data_dict["TTS_on_transcript"].append(has_stop)
-        data_dict["ORF_len"].append(len(prot) * 3)
+        df_dict["stop_codon"].append(stop_codon)
+        df_dict["prot"].append(prot)
+        df_dict["TTS_on_transcript"].append(has_stop)
+        df_dict["ORF_len"].append(len(prot) * 3)
         TIS_exon = np.sum(TIS_idx >= row.exon_idxs) // 2 + 1
         TIS_exon_idx = TIS_idx - row.exon_idxs[(TIS_exon - 1) * 2]
         if row.strand == b"+":
@@ -288,7 +297,7 @@ def construct_output_table(
         else:
             TIS_coord = row.exon_coords[(TIS_exon - 1) * 2 + 1] - TIS_exon_idx
         if has_stop:
-            TTS_idx = TIS_idx + data_dict["ORF_len"][-1]
+            TTS_idx = TIS_idx + df_dict["ORF_len"][-1]
             TTS_pos = TTS_idx + 1
             TTS_exon = np.sum(TTS_idx >= row.exon_idxs) // 2 + 1
             TTS_exon_idx = TTS_idx - row.exon_idxs[(TTS_exon - 1) * 2]
@@ -299,13 +308,13 @@ def construct_output_table(
         else:
             TTS_coord, TTS_exon, TTS_pos = -1, -1, -1
 
-        data_dict["TIS_coord"].append(TIS_coord)
-        data_dict["TIS_exon"].append(TIS_exon)
-        data_dict["TTS_pos"].append(TTS_pos)
-        data_dict["TTS_exon"].append(TTS_exon)
-        data_dict["TTS_coord"].append(TTS_coord)
+        df_dict["TIS_coord"].append(TIS_coord)
+        df_dict["TIS_exon"].append(TIS_exon)
+        df_dict["TTS_pos"].append(TTS_pos)
+        df_dict["TTS_exon"].append(TTS_exon)
+        df_dict["TTS_coord"].append(TTS_coord)
 
-    df_out = df_out.assign(**data_dict)
+    df_out = df_out.assign(**df_dict)
     df_out["TIS_idx"] = TIS_idxs
     df_out["correction"] = corrections
     df_out["seqname"] = df_out["contig"]
@@ -321,10 +330,10 @@ def construct_output_table(
     if has_seq_output:
         seq_out = [
             f["seq_output"][i][j]
-            for i, j in zip(data_dict["f_idx"], data_dict["TIS_idx"])
+            for i, j in zip(orf_dict["f_idx"], orf_dict["TIS_idx"])
         ]
-        data_dict.update({"seq_output": seq_out})
-
+        orf_dict.update({"seq_output": seq_out})
+    
     if has_ribo_output:
         ribo_subsets = np.array(ribo_id.split(b"@"))
         sparse_reads_set = []
@@ -334,8 +343,8 @@ def construct_output_table(
             )
             sparse_reads_set.append(sparse_reads)
         sparse_reads = np.add.reduce(sparse_reads_set)
-        df_out["reads_per_base"] = (
-            np.array([s.sum() for s in sparse_reads]) / df_out.tr_len
+        df_out["reads_in_tr"] = (
+            np.array([s.sum() for s in sparse_reads])
         )
         reads_in = []
         reads_out = []
@@ -351,13 +360,13 @@ def construct_output_table(
             in_frame_reads = sparse_reads[i][
                 :, np.arange(row["TIS_pos"] - 1, end_of_ORF_idx, 3)
             ].sum()
+            reads_in.append(reads_in_ORF)
+            reads_out.append(reads_out_ORF)
 
-            reads_in.append(reads_in_ORF / max(1, row.ORF_len))
-            reads_out.append(reads_out_ORF / max(1, (row.tr_len - row.ORF_len)))
             in_frame_read_perc.append(in_frame_reads / max(reads_in_ORF, 1))
 
-        df_out["rpb_in_ORF"] = reads_in
-        df_out["rpb_out_ORF"] = reads_out
+        df_out["reads_in_ORF"] = reads_in
+        df_out["reads_out_ORF"] = reads_out
         df_out["in_frame_read_perc"] = in_frame_read_perc
 
     TIS_coords = np.array(f["canonical_TIS_coord"])
@@ -395,7 +404,7 @@ def construct_output_table(
             else:
                 orf_type.append("other")
     df_out["ORF_type"] = orf_type
-    df_out.loc[df_out["biotype"] == b"lncRNA", "ORF_type"] = "lncRNA-ORF"
+    df_out.loc[df_out["tr_biotype"] == b"lncRNA", "ORF_type"] = "lncRNA-ORF"
     # decode strs
     for header in decode:
         df_out[header] = df_out[header].str.decode("utf-8")
