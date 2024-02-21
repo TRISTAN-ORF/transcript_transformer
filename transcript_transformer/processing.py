@@ -4,7 +4,6 @@ from datetime import datetime
 from tqdm import tqdm
 import pandas as pd
 
-
 cdn_prot_dict = {
     "ATA": "I",
     "ATC": "I",
@@ -97,7 +96,7 @@ headers = [
 
 out_headers = [
     "seqname",
-    "orf_id",
+    "ORF_id",
     "tr_id",
     "TIS_pos",
     "output",
@@ -113,6 +112,7 @@ out_headers = [
     "reads_out_ORF",
     "in_frame_read_perc",
     "ORF_type",
+    "ORF_equals_CDS",
     "tr_biotype",
     "tr_support_lvl",
     "tr_tag",
@@ -371,12 +371,19 @@ def construct_output_table(
 
     TIS_coords = np.array(f["canonical_TIS_coord"])
     TTS_coords = np.array(f["canonical_TTS_coord"])
+    cds_lens = np.array(f['canonical_TTS_idx']) - np.array(f['canonical_TIS_idx'])
     orf_type = []
+    is_cds = []
     for i, row in tqdm(
         df_out.iterrows(),
         total=len(df_out),
         desc=f"{time()}: parsing ORF type information ",
     ):
+        TIS_mask = row["TIS_coord"] == TIS_coords
+        TTS_mask = row["TTS_coord"] == TTS_coords
+        len_mask = row.ORF_len == cds_lens
+        is_cds.append(np.logical_and.reduce([TIS_mask, TTS_mask, len_mask]).any())
+
         if row["canonical_TIS_idx"] != -1:
             if row["canonical_TIS_idx"] == row["TIS_pos"] - 1:
                 orf_type.append("annotated CDS")
@@ -404,18 +411,18 @@ def construct_output_table(
             else:
                 orf_type.append("other")
     df_out["ORF_type"] = orf_type
+    df_out["ORF_equals_CDS"] = is_cds
     df_out.loc[df_out["tr_biotype"] == b"lncRNA", "ORF_type"] = "lncRNA-ORF"
     # decode strs
     for header in decode:
         df_out[header] = df_out[header].str.decode("utf-8")
-    df_out["orf_id"] = df_out["tr_id"] + "_" + df_out["TIS_pos"].astype(str)
+    df_out["ORF_id"] = df_out["tr_id"] + "_" + df_out["TIS_pos"].astype(str)
     # re-arrange columns
     o_headers = [h for h in out_headers if h in df_out.columns]
     df_out = df_out.loc[:, o_headers].sort_values("output_rank")
     # remove duplicates
     if correction and remove_duplicates:
-        df_out = df_out.drop_duplicates("orf_id")
-
+        df_out = df_out.drop_duplicates("ORF_id")
     df_out.to_csv(f"{out_prefix}.csv", index=None)
 
 

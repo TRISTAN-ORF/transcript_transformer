@@ -161,7 +161,7 @@ def save_transcriptome_to_h5(f, data_dict):
             )
         elif key in ["seq", "tis"]:
             grp.create_dataset(key, data=array, dtype=dt8)
-        elif key in ["exon_idxs", "exon_coords", "cds_idxs", "cds_coords"]:
+        elif key in ["exon_idxs", "exon_coords", "CDS_idxs", "CDS_coords"]:
             grp.create_dataset(key, data=np.array(array, dtype=object), dtype=dt)
         else:
             grp.create_dataset(key, data=array)
@@ -200,8 +200,8 @@ def parse_transcriptome(gtf_path, fa_path):
         "canonical_TIS_exon_idx": [],
         "exon_idxs": [],
         "exon_coords": [],
-        "cds_idxs": [],
-        "cds_coords": [],
+        "CDS_idxs": [],
+        "CDS_coords": [],
         "canonical_TIS_idx": [],
         "canonical_TIS_coord": [],
         "canonical_TTS_idx": [],
@@ -315,13 +315,13 @@ def parse_transcriptome(gtf_path, fa_path):
                     exon_i = cdss[-1, "exon_number"] - 1
                     exon_shift = cum_exon_lens[exon_i]
                     cds_offset = exon_shift + exons[exon_i, "end"] - cdss[-1, "end"]
-                data_dict["cds_idxs"].append(cds_idxs + cds_offset)
-                data_dict["cds_coords"].append(
+                data_dict["CDS_idxs"].append(cds_idxs + cds_offset)
+                data_dict["CDS_coords"].append(
                     cdss[:, ["start", "end"]].transpose().melt()["value"].to_numpy()
                 )
             else:
-                data_dict["cds_idxs"].append(np.empty(0, dtype=int))
-                data_dict["cds_coords"].append(np.empty(0, dtype=int))
+                data_dict["CDS_idxs"].append(np.empty(0, dtype=int))
+                data_dict["CDS_coords"].append(np.empty(0, dtype=int))
 
             exon_coords = []
             exon_seqs = []
