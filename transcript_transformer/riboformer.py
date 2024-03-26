@@ -17,14 +17,6 @@ def parse_args():
     parser = Parser(description="Run Ribo-former", stage="train")
     parser.add_data_args()
     parser.add_argument(
-        "--factor",
-        type=float,
-        default=1,
-        help="Determines the number of model predictions in the result table."
-        "This factor is multiplied to the number of canonical "
-        "TISs present on evaluated transcripts.",
-    )
-    parser.add_argument(
         "--prob_cutoff",
         type=float,
         default=0.15,
@@ -35,44 +27,49 @@ def parse_args():
         "--start_codons",
         type=str,
         default=".*TG$",
-        help="valid start codons to include in result table. Uses regex string",
+        help="Valid start codons to include in result table. Uses regex string.",
     )
     parser.add_argument(
         "--min_ORF_len",
         type=int,
         default="15",
-        help="min length of predicted translated open reading frames",
+        help="Minimum nucleotide length of predicted translated open reading frames.",
     )
     parser.add_argument(
         "--include_invalid_TTS",
         action="store_true",
-        help="Include translated ORF predictions with no TTS on transcript",
+        help="Include translated ORF predictions with no TTS on transcript.",
     )
     parser.add_argument(
         "--no_correction",
         action="store_false",
-        help="don't correct to nearest in-frame ATG, see --distance to adjust distance",
+        help="Don't correct to nearest in-frame ATG, see --distance to adjust distance.",
     )
     parser.add_argument(
         "--distance",
         type=int,
         default=9,
-        help="number of codons to search up- and downstream for an ATG (see also --no_correction)",
+        help="Number of codons to search up- and downstream for an ATG (see also --no_correction).",
     )
     parser.add_argument(
         "--keep_duplicates",
         action="store_true",
-        help="don't remove duplicate ORFs resulting from the correction step",
+        help="Don't remove duplicate ORFs resulting from the correction step.",
+    )
+    parser.add_argument(
+        "--include_annotated",
+        action="store_true",
+        help="Include annotated CDS regions in generated GTF file containing predicted translated ORFs.",
     )
     parser.add_argument(
         "--data",
         action="store_true",
-        help="only perform pre-processing of data",
+        help="Only perform pre-processing of data.",
     )
     parser.add_argument(
         "--results",
         action="store_true",
-        help="only perform processing of model predictions",
+        help="Only perform processing of model predictions.",
     )
     parser.add_comp_args()
     parser.add_training_args()
@@ -147,16 +144,16 @@ def main():
                 f=f["transcript"],
                 out_prefix=out_prefix,
                 prob_cutoff=args.prob_cutoff,
-                correction=~args.no_correction,
+                correction=not args.no_correction,
                 dist=args.distance,
                 start_codons=args.start_codons,
                 min_ORF_len=args.min_ORF_len,
-                remove_duplicates=~args.keep_duplicates,
-                exclude_invalid_TTS=~args.include_invalid_TTS,
+                remove_duplicates=not args.keep_duplicates,
+                exclude_invalid_TTS=not args.include_invalid_TTS,
                 ribo=out,
             )
             if df is not None:
-                csv_to_gtf(f, df, out_prefix)
+                csv_to_gtf(f, df, out_prefix, not args.include_annotated)
         f.close()
 
 

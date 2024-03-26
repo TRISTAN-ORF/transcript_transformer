@@ -376,7 +376,7 @@ def process_seq_preds(ids, preds, seqs, min_prob):
     return df
 
 
-def csv_to_gtf(f, df, out_prefix):
+def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
     """convert RiboTIE result table to GTF
     Args:
         csv_path (str): path to result table
@@ -387,6 +387,8 @@ def csv_to_gtf(f, df, out_prefix):
     """
 
     df = pl.from_pandas(df)
+    if exclude_annotated:
+        df = df.filter(pl.col("ORF_type") != "annotated CDS")
     df = df.fill_null("NA")
     f_ids = np.array(f["transcript/id"])
     xsorted = np.argsort(f_ids)
