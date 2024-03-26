@@ -405,6 +405,11 @@ def parse_config_file(args):
             flat_ids
         ), "ribo_id is used multiple times"
 
+    # no "&" allowed in ribo_ids
+    assert all(
+        ["&" not in id for id in np.array(args.ribo_ids).ravel()]
+    ), "No & character allowed in sample IDs..."
+
     # conditions used to remove transcripts from training/validation data
     conds = {"global": {}, "grouped": [{} for l in range(len(args.ribo_ids))]}
     conds["global"]["tr_len"] = lambda x: np.logical_and(
