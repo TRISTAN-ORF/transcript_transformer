@@ -6,11 +6,11 @@ import h5py
 from importlib import resources as impresources
 from copy import deepcopy
 
-from transcript_transformer.transcript_transformer import train, predict
-from transcript_transformer.argparser import Parser, parse_config_file
-from transcript_transformer.pretrained import riboformer_models
-from transcript_transformer.data import process_seq_data, process_ribo_data
-from transcript_transformer.processing import construct_output_table
+from .transcript_transformer import train, predict
+from .argparser import Parser, parse_config_file
+from .pretrained import riboformer_models
+from .data import process_seq_data, process_ribo_data
+from .processing import construct_output_table, csv_to_gtf
 
 
 def parse_args():
@@ -27,9 +27,26 @@ def parse_args():
     parser.add_argument(
         "--prob_cutoff",
         type=float,
-        default=0.03,
+        default=0.15,
         help="Determines the minimum model output score required for model "
         "predictions to be included in the result table.",
+    )
+    parser.add_argument(
+        "--start_codons",
+        type=str,
+        default=".*TG$",
+        help="valid start codons to include in result table. Uses regex string",
+    )
+    parser.add_argument(
+        "--min_ORF_len",
+        type=int,
+        default="15",
+        help="min length of predicted translated open reading frames",
+    )
+    parser.add_argument(
+        "--include_invalid_TTS",
+        action="store_true",
+        help="Include translated ORF predictions with no TTS on transcript",
     )
     parser.add_argument(
         "--no_correction",
@@ -63,7 +80,7 @@ def parse_args():
     args = parser.parse_args(sys.argv[1:])
     args = parse_config_file(args)
     if args.out_prefix is None:
-        args.out_prefix = os.path.splitext(args.input_config)[0]
+        args.out_prefix = f"{os.path.splitext(args.input_config)[0]}_"
     assert ~args.results and ~args.data, (
         "cannot only do processing of data and results, disable either"
         " --data_process or --result_process"
@@ -98,41 +115,48 @@ def main():
             args_set = deepcopy(args)
             args_set.ribo_ids = [ribo_set]
             args_set.cond["grouped"] = [args.cond["grouped"][i]]
-            ribo_set_str = "@".join(ribo_set)
+            ribo_set_str = "&".join(ribo_set)
             for j, fold in args_set.folds.items():
                 args_set.__dict__.update(fold)
                 callback_path = (
                     impresources.files(riboformer_models)
                     / f"{args_set.transfer_checkpoint}"
                 )
-                print(f"--> Loading model: {callback_path}")
+                print(f"--> Loading model: {callback_path}...")
                 args_set.transfer_checkpoint = callback_path
+                print(f"--> Finetuning model for {ribo_set_str}...")
                 trainer, model = train(
                     args_set, test_model=False, enable_model_summary=False
                 )
-                print(f"--> Predicting samples for {ribo_set_str}")
-                args_set.out_prefix = f"{args.out_prefix}_{ribo_set_str}_f{j}"
+                print(f"--> Predicting samples for {ribo_set_str}...")
+                args_set.out_prefix = f"{args.out_prefix}{ribo_set_str}_f{j}"
                 predict(args_set, trainer=trainer, model=model, postprocess=False)
 
-            ribo_set_str = "@".join(ribo_set)
-            prefix = f"{args.out_prefix}_{ribo_set_str}"
+            ribo_set_str = "&".join(ribo_set)
+            prefix = f"{args.out_prefix}{ribo_set_str}"
             merge_outputs(prefix, args.folds.keys())
 
     if not args.data:
         f = h5py.File(args.h5_path, "r")
         for ribo_set in args.ribo_ids:
-            ribo_set_str = "@".join(ribo_set)
-            out = np.load(f"{args.out_prefix}_{ribo_set_str}.npy", allow_pickle=True)
-            construct_output_table(
-                f = f["transcript"],
-                out_prefix = f"{args.out_prefix}_{ribo_set_str}",
-                factor = args.factor,
-                prob_cutoff = args.prob_cutoff,
-                correction = ~args.no_correction,
-                dist = args.distance,
-                remove_duplicates = ~args.keep_duplicates,
-                ribo = out,
+
+            ribo_set_str = "&".join(ribo_set)
+            out = np.load(f"{args.out_prefix}{ribo_set_str}.npy", allow_pickle=True)
+            out_prefix = f"{args.out_prefix}{ribo_set_str}"
+            df = construct_output_table(
+                f=f["transcript"],
+                out_prefix=out_prefix,
+                prob_cutoff=args.prob_cutoff,
+                correction=~args.no_correction,
+                dist=args.distance,
+                start_codons=args.start_codons,
+                min_ORF_len=args.min_ORF_len,
+                remove_duplicates=~args.keep_duplicates,
+                exclude_invalid_TTS=~args.include_invalid_TTS,
+                ribo=out,
             )
+            if df is not None:
+                csv_to_gtf(f, df, out_prefix)
         f.close()
 
 

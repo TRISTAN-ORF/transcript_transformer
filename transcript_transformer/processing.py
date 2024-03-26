@@ -1,77 +1,16 @@
 import numpy as np
 import h5max
-from datetime import datetime
 from tqdm import tqdm
 import pandas as pd
+import polars as pl
 
-cdn_prot_dict = {
-    "ATA": "I",
-    "ATC": "I",
-    "ATT": "I",
-    "ATG": "M",
-    "ACA": "T",
-    "ACC": "T",
-    "ACG": "T",
-    "ACT": "T",
-    "AAC": "N",
-    "AAT": "N",
-    "AAA": "K",
-    "AAG": "K",
-    "AGC": "S",
-    "AGT": "S",
-    "AGA": "R",
-    "AGG": "R",
-    "CTA": "L",
-    "CTC": "L",
-    "CTG": "L",
-    "CTT": "L",
-    "CCA": "P",
-    "CCC": "P",
-    "CCG": "P",
-    "CCT": "P",
-    "CAC": "H",
-    "CAT": "H",
-    "CAA": "Q",
-    "CAG": "Q",
-    "CGA": "R",
-    "CGC": "R",
-    "CGG": "R",
-    "CGT": "R",
-    "GTA": "V",
-    "GTC": "V",
-    "GTG": "V",
-    "GTT": "V",
-    "GCA": "A",
-    "GCC": "A",
-    "GCG": "A",
-    "GCT": "A",
-    "GAC": "D",
-    "GAT": "D",
-    "GAA": "E",
-    "GAG": "E",
-    "GGA": "G",
-    "GGC": "G",
-    "GGG": "G",
-    "GGT": "G",
-    "TCA": "S",
-    "TCC": "S",
-    "TCG": "S",
-    "TCT": "S",
-    "TTC": "F",
-    "TTT": "F",
-    "TTA": "L",
-    "TTG": "L",
-    "TAC": "Y",
-    "TAT": "Y",
-    "TAA": "_",
-    "TAG": "_",
-    "TGC": "C",
-    "TGT": "C",
-    "TGA": "_",
-    "TGG": "W",
-    "NNN": "_",
-}
-
+from .util_functions import (
+    construct_prot,
+    time,
+    vec2DNA,
+    find_distant_exon_coord,
+    transcript_region_to_exons,
+)
 
 headers = [
     "id",
@@ -149,46 +88,16 @@ decode = [
 ]
 
 
-def vec2DNA(tr_seq, np_dict=np.array(["A", "T", "C", "G", "N"])):
-    return "".join(np_dict[tr_seq])
-
-
-def time():
-    return datetime.now().strftime("%H:%M:%S %m-%d ")
-
-
-def construct_prot(seq):
-    stop_cds = ["TAG", "TGA", "TAA"]
-    sh_cds = np.array([seq[n : n + 3] for n in range(0, len(seq) - 2, 3)])
-    stop_site_pos = np.where(np.isin(sh_cds, stop_cds))[0]
-    if len(stop_site_pos) > 0:
-        has_stop = True
-        stop_site = stop_site_pos[0]
-        stop_codon = sh_cds[stop_site]
-        cdn_seq = sh_cds[:stop_site]
-    else:
-        has_stop = False
-        stop_codon = None
-        cdn_seq = sh_cds
-
-    string = ""
-    for cdn in cdn_seq:
-        if "N" in cdn:
-            string += "_"
-        else:
-            string += cdn_prot_dict[cdn]
-
-    return string, has_stop, stop_codon
-
-
 def construct_output_table(
     f,
     out_prefix,
-    factor=0.8,
-    prob_cutoff=0.05,
+    prob_cutoff=0.15,
     correction=False,
     dist=9,
+    start_codons=".*TG$",
+    min_ORF_len=15,
     remove_duplicates=True,
+    exclude_invalid_TTS=True,
     ribo=None,
 ):
     f_tr_ids = np.array(f["id"])
@@ -203,18 +112,18 @@ def construct_output_table(
         xsorted = np.argsort(f_tr_ids)
         pred_to_h5_args = xsorted[np.searchsorted(f_tr_ids[xsorted], tr_ids)]
         preds = np.hstack([o[1] for o in ribo])
-        canon_TIS_sum = sum([o[2].sum() for o in ribo])
 
     else:
-        canon_TIS_sum = np.hstack(f["tis"]).sum()
         mask = [len(o) > 0 for o in np.array(f["seq_output"])]
         preds = np.hstack(np.array(f["seq_output"]))
         pred_to_h5_args = np.where(mask)[0]
-    num_top_results = int(canon_TIS_sum * factor)
     # map pred ids to database id
-    num_high_preds = (preds > prob_cutoff).sum()
-
-    k = max(min(num_top_results, num_high_preds), 100)
+    k = (preds > prob_cutoff).sum()
+    if k == 0:
+        print(
+            f"!-> No predictions with an output probability higher than {prob_cutoff}"
+        )
+        return None
     lens = np.array(f["tr_len"])[pred_to_h5_args]
     cum_lens = np.cumsum(np.insert(lens, 0, 0))
     idxs = np.argpartition(preds, -k)[-k:]
@@ -231,17 +140,18 @@ def construct_output_table(
         ]
         orf_dict.update({"seq_output": seq_out})
     orf_dict.update(
-        {
-            f"{header}": np.array(f[f"{header}"])[orf_dict["f_idx"]]
-            for header in headers
-        }
+        {f"{header}": np.array(f[f"{header}"])[orf_dict["f_idx"]] for header in headers}
     )
     orf_dict.update(orf_dict)
     df_out = pd.DataFrame(data=orf_dict)
-    df_out=df_out.rename(columns = {"id":"tr_id",
-                                    "support_lvl" : "tr_support_lvl",
-                                    "biotype" : "tr_biotype",
-                                    "tag" : "tr_tag"})
+    df_out = df_out.rename(
+        columns={
+            "id": "tr_id",
+            "support_lvl": "tr_support_lvl",
+            "biotype": "tr_biotype",
+            "tag": "tr_tag",
+        }
+    )
     df_out["correction"] = np.nan
 
     df_dict = {
@@ -261,9 +171,7 @@ def construct_output_table(
     TIS_idxs = df_out.TIS_idx.copy()
     corrections = df_out.correction.copy()
     for i, row in tqdm(
-        df_out.iterrows(),
-        total=len(df_out),
-        desc=f"{time()}: parsing ORF information "
+        df_out.iterrows(), total=len(df_out), desc=f"{time()}: parsing ORF information "
     ):
         tr_seq = f["seq"][row.f_idx]
         TIS_idx = row.TIS_idx
@@ -326,16 +234,16 @@ def construct_output_table(
     df_out["dist_from_canonical_TIS"] = df_out["TIS_idx"] - df_out["canonical_TIS_idx"]
     df_out.loc[df_out["canonical_TIS_idx"] == -1, "dist_from_canonical_TIS"] = np.nan
     df_out["frame_wrt_canonical_TIS"] = df_out["dist_from_canonical_TIS"] % 3
-    
+
     if has_seq_output:
         seq_out = [
             f["seq_output"][i][j]
             for i, j in zip(orf_dict["f_idx"], orf_dict["TIS_idx"])
         ]
         orf_dict.update({"seq_output": seq_out})
-    
+
     if has_ribo_output:
-        ribo_subsets = np.array(ribo_id.split(b"@"))
+        ribo_subsets = np.array(ribo_id.split(b"&"))
         sparse_reads_set = []
         for subset in ribo_subsets:
             sparse_reads = h5max.load_sparse(
@@ -343,9 +251,7 @@ def construct_output_table(
             )
             sparse_reads_set.append(sparse_reads)
         sparse_reads = np.add.reduce(sparse_reads_set)
-        df_out["reads_in_tr"] = (
-            np.array([s.sum() for s in sparse_reads])
-        )
+        df_out["reads_in_tr"] = np.array([s.sum() for s in sparse_reads])
         reads_in = []
         reads_out = []
         in_frame_read_perc = []
@@ -371,7 +277,7 @@ def construct_output_table(
 
     TIS_coords = np.array(f["canonical_TIS_coord"])
     TTS_coords = np.array(f["canonical_TTS_coord"])
-    cds_lens = np.array(f['canonical_TTS_idx']) - np.array(f['canonical_TIS_idx'])
+    cds_lens = np.array(f["canonical_TTS_idx"]) - np.array(f["canonical_TIS_idx"])
     orf_type = []
     is_cds = []
     for i, row in tqdm(
@@ -423,7 +329,13 @@ def construct_output_table(
     # remove duplicates
     if correction and remove_duplicates:
         df_out = df_out.drop_duplicates("ORF_id")
+    if exclude_invalid_TTS:
+        df_out = df_out[df_out["TTS_on_transcript"]]
+    df_out = df_out[df_out["ORF_len"] > min_ORF_len]
+    df_out = df_out[df_out["start_codon"].str.contains(start_codons)]
     df_out.to_csv(f"{out_prefix}.csv", index=None)
+
+    return df_out
 
 
 def process_seq_preds(ids, preds, seqs, min_prob):
@@ -462,3 +374,102 @@ def process_seq_preds(ids, preds, seqs, min_prob):
             ]
             num += 1
     return df
+
+
+def csv_to_gtf(f, df, out_prefix):
+    """convert RiboTIE result table to GTF
+    Args:
+        csv_path (str): path to result table
+        gtf_path (str, optional): Path to gtf file. function appends lines if file already exists.
+        exclude_cdss (bool, optional): Exclude annotated coding sequences. Defaults to True.
+        output_th (float, optional): Model output threshold to determine positive set. Defaults to 0.15.
+        filt_TTS_on_tr (bool, optional): Exclude predictions with no valid TTS. Defaults to True.
+    """
+
+    df = pl.from_pandas(df)
+    df = df.fill_null("NA")
+    f_ids = np.array(f["transcript/id"])
+    xsorted = np.argsort(f_ids)
+    pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["tr_id"])]
+    exon_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
+    gtf_parts = []
+    for tis, stop_codon_start, strand, exons in zip(
+        df["TIS_coord"], df["TTS_coord"], df["strand"], exon_coords
+    ):
+        start_codon_stop = find_distant_exon_coord(tis, 2, strand, exons)
+        start_parts, start_exons = transcript_region_to_exons(
+            tis, start_codon_stop, strand, exons
+        )
+        # acquire cds stop coord from stop codon coord.
+        if stop_codon_start != -1:
+            stop_codon_stop = find_distant_exon_coord(
+                stop_codon_start, 2, strand, exons
+            )
+            stop_parts, stop_exons = transcript_region_to_exons(
+                stop_codon_start, stop_codon_stop, strand, exons
+            )
+            if strand == "+":
+                tts = stop_codon_start - 1
+            else:
+                tts = stop_codon_start + 1
+        else:
+            stop_parts, stop_exons = np.empty(start_parts.shape), np.empty(
+                start_exons.shape
+            )
+            tts = -1
+
+        cds_parts, cds_exons = transcript_region_to_exons(tis, tts, strand, exons)
+        coords_packed = np.vstack(
+            [
+                start_parts.reshape(-1, 2),
+                cds_parts.reshape(-1, 2),
+                stop_parts.reshape(-1, 2),
+            ]
+        )
+        exons_packed = np.hstack([start_exons, cds_exons, stop_exons]).reshape(-1, 1)
+        features_packed = np.hstack(
+            [
+                np.full(len(start_exons), "start_codon"),
+                np.full(len(cds_exons), "CDS"),
+                np.full(len(stop_exons), "stop_codon"),
+            ]
+        ).reshape(-1, 1)
+        gtf_parts.append(np.hstack([coords_packed, exons_packed, features_packed]))
+    gtf_lines = []
+    for i, row in enumerate(df.iter_rows(named=True)):
+        for start, stop, exon, feature in gtf_parts[i]:
+            gtf_lines.append(
+                row["seqname"]
+                + "\tRiboTIE\t"
+                + feature
+                + "\t"
+                + start
+                + "\t"
+                + stop
+                + "\t.\t"
+                + row["strand"]
+                + '\t0\tgene_id "'
+                + row["gene_id"]
+                + '"; transcript_id "'
+                + row["tr_id"]
+                + '"; ORF_id "'
+                + row["ORF_id"]
+                + '"; model_output "'
+                + f"{row['output']:.5}"
+                + '"; orf_type "'
+                + row["ORF_type"]
+                + '"; exon_number "'
+                + exon
+                + '"; gene_name "'
+                + row["gene_name"]
+                + '"; transcript_biotype "'
+                + row["tr_biotype"]
+                + '"; tag "'
+                + row["tr_tag"]
+                + '"; transcript_support_level "'
+                + row["tr_support_lvl"]
+                + '";\n'
+            )
+    with open(f"{out_prefix}.gtf", "w") as f:
+        for line in gtf_lines:
+            f.write(line)
