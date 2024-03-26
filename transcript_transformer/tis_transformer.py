@@ -4,14 +4,14 @@ import numpy as np
 import yaml
 import h5py
 from importlib import resources as impresources
-import heapq
 from argparse import Namespace
 
-from transcript_transformer.transcript_transformer import train, predict
-from transcript_transformer.argparser import Parser, parse_config_file
-from transcript_transformer.pretrained import tis_transformer_models
-from transcript_transformer.data import process_seq_data
-from transcript_transformer.processing import construct_output_table
+from .transcript_transformer import train, predict
+from .argparser import Parser, parse_config_file
+from .util_functions import define_folds
+from .pretrained import tis_transformer_models
+from .data import process_seq_data
+from .processing import construct_output_table
 
 
 def parse_args():
@@ -149,76 +149,6 @@ def merge_outputs(prefix, keys):
     out = np.vstack([np.load(f"{prefix}_f{i}.npy", allow_pickle=True) for i in keys])
     np.save(f"{prefix}.npy", out)
     [os.remove(f"{prefix}_f{i}.npy") for i in keys]
-
-
-def divide_seqnames(seqname_count_dict, num_chunks):
-    arr = np.array(list(seqname_count_dict.values()))
-    labels = np.array(list(seqname_count_dict.keys()))
-    idxs = np.argsort(arr)[::-1]
-    arr = np.sort(arr)[::-1]
-    heap = [(0, idx) for idx in range(num_chunks)]
-    heapq.heapify(heap)
-    sets_v = {}
-    sets_k = {}
-    for i in range(num_chunks):
-        sets_v[i] = []
-        sets_k[i] = []
-    arr_idx = 0
-    while arr_idx < len(arr):
-        set_sum, set_idx = heapq.heappop(heap)
-        sets_k[set_idx].append(labels[idxs][arr_idx])
-        sets_v[set_idx].append(arr[idxs][arr_idx])
-        set_sum += arr[arr_idx]
-        heapq.heappush(heap, (set_sum, set_idx))
-        arr_idx += 1
-
-    folds = zip(sets_k.values(), sets_v.values())
-    return {i: {x: y for x, y in zip(k, v)} for i, (k, v) in enumerate(folds)}
-
-
-def define_folds(seqn_size_dict, test=0.2, val=0.2):
-    test_chunks = int(np.ceil(1 / test))
-    val_chunks_set = int(np.ceil(1 / val))
-    contig_set = np.array(list(seqn_size_dict.keys()))
-    if len(contig_set) < test_chunks:
-        test_chunks = len(contig_set)
-        print(
-            f"!-> Not enough seqnames to divide data, increasing test set"
-            f" to {(1/test_chunks):.2f}% of full data"
-        )
-    groups = divide_seqnames(seqn_size_dict, test_chunks)
-    folds = {}
-    for fold_i, group in groups.items():
-        mask = np.isin(contig_set, list(group.keys()))
-        test_set = contig_set[mask]
-        tr_val_set = contig_set[~mask]
-        tr_val_lens = {k: v for k, v in seqn_size_dict.items() if k in tr_val_set}
-        if len(tr_val_lens) < val_chunks_set:
-            val_chunks = len(tr_val_lens)
-            print(
-                f"!-> Not enough seqnames to divide data, increasing val set to"
-                f" {(1/val_chunks):.2f}% of train/val data in fold {fold_i}"
-            )
-        else:
-            val_chunks = val_chunks_set
-        tr_val_groups = divide_seqnames(tr_val_lens, val_chunks)
-        # Find group that is closest to queried partition
-        tot_count = sum(tr_val_lens.values())
-        val_counts = np.empty(val_chunks)
-        for i, val in enumerate(tr_val_groups.values()):
-            np.array(list(val.values()))
-            val_sum = sum(val.values())
-            val_counts[i] = val_sum / (tot_count - val_sum)
-        group_idx = np.argmin(abs(val_counts - 1 / val_chunks))
-        val_mask = np.isin(tr_val_set, list(tr_val_groups[group_idx].keys()))
-        val_set, train_set = tr_val_set[val_mask], tr_val_set[~val_mask]
-        tr = [t.decode() for t in train_set]
-        val = [t.decode() for t in val_set]
-        test = [t.decode() for t in test_set]
-        print(f"\tFold {fold_i}: train: {tr}, val: {val}, test: {test}")
-        folds[fold_i] = {"train": train_set, "val": val_set, "test": test_set}
-
-    return folds
 
 
 if __name__ == "__main__":

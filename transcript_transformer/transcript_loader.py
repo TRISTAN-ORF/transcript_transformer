@@ -434,7 +434,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
                 ribo_set = self.ribo_ids[set_idx]
                 for i, ribo_id in enumerate(ribo_set):
                     if i == 0:
-                        id_prefix = "@".join(ribo_set) + "|"
+                        id_prefix = "&".join(ribo_set) + "|"
                     ribo_path = f"riboseq/{ribo_id}/5"
                     x = load_sparse(self.fh[ribo_path], idx, format="csr").T
                     if self.offsets is not None:

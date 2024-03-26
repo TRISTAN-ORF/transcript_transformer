@@ -13,52 +13,16 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 
-from transcript_transformer.models import TranscriptSeqRiboEmb
-from transcript_transformer.transcript_loader import (
+from .models import TranscriptSeqRiboEmb
+from .transcript_loader import (
     h5pyDataModule,
     DNADatasetBatches,
     collate_fn,
 )
-from transcript_transformer.processing import process_seq_preds
-from transcript_transformer.data import process_seq_data, process_ribo_data
-from transcript_transformer.argparser import Parser, parse_config_file
-
-
-def DNA2vec(dna_seq):
-    seq_dict = {"A": 0, "T": 1, "U": 1, "C": 2, "G": 3, "N": 4}
-    dna_vec = np.zeros(len(dna_seq), dtype=int)
-    for idx in np.arange(len(dna_seq)):
-        dna_vec[idx] = seq_dict[dna_seq[idx]]
-
-    return dna_vec
-
-
-def prep_input(x, device):
-    x = torch.LongTensor(np.hstack(([5], x, [6]))).view(1, -1)
-    y = torch.LongTensor(torch.ones_like(x))
-    y[0, 0] = -1
-    y[0, -1] = -1
-
-    return {"seq": x, "y": y}
-
-
-def construct_prot(seq):
-    stop_cds = ["TAG", "TGA", "TAA"]
-    sh_cds = np.array([seq[n : n + 3] for n in range(0, len(seq) - 2, 3)])
-    stop_site_pos = np.where(np.isin(sh_cds, stop_cds))[0]
-    if len(stop_site_pos) > 0:
-        has_stop = True
-        stop_site = stop_site_pos[0]
-        cdn_seq = sh_cds[:stop_site]
-    else:
-        has_stop = False
-        cdn_seq = sh_cds
-
-    string = ""
-    for cdn in cdn_seq:
-        string += CDN_PROT_DICT[cdn]
-
-    return string, has_stop
+from .util_functions import DNA2vec
+from .processing import process_seq_preds
+from .data import process_seq_data, process_ribo_data
+from .argparser import Parser, parse_config_file
 
 
 def parse_args():
@@ -250,7 +214,6 @@ def train(args, test_model=True, enable_model_summary=True):
     # trainer.predict(model, dataloaders=tr_loader, ckpt_path="best")
 
 
-# TODO predict function needs refacturing and cleanup, better integration with custom riboformer scripts
 def predict(args, trainer=None, model=None, postprocess=True):
     if args.accelerator == "cpu":
         map_location = torch.device("cpu")
@@ -337,7 +300,9 @@ def predict(args, trainer=None, model=None, postprocess=True):
             df.to_csv(f"{args.out_prefix}.csv", index=None)
             print(f"\n--> Sites of interest saved to '{args.out_prefix}.csv'")
         else:
-            print(f"\n!-> No sites of interest found (omitted creation of '{args.out_prefix}.csv')")
+            print(
+                f"\n!-> No sites of interest found (omitted creation of '{args.out_prefix}.csv')"
+            )
 
     np.save(
         f"{args.out_prefix}.npy",
