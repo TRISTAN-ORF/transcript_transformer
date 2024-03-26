@@ -3,6 +3,7 @@ import traceback
 import logging
 from copy import deepcopy
 import shutil
+import time
 import numpy as np
 
 from scipy import sparse
@@ -67,16 +68,28 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
         f.close()
     else:
         data_dict = parse_transcriptome(gtf_path, fa_path)
-        try:
-            f = h5py.File(h5_path, "a")
-            f = save_transcriptome_to_h5(f, data_dict)
-        except Exception as e:
-            logging.error(traceback.format_exc())
-            f.close()
-            os.remove(h5_path)
-        if backup and not pulled:
-            f.close()
-            shutil.copy(h5_path, backup_path)
+        no_handle = True
+        max_wait = 900
+        waited = 0
+        while no_handle and (waited < max_wait):
+            try:
+                f = h5py.File(h5_path, "a")
+                no_handle = False
+            except Exception as e:
+                if waited < max_wait:
+                    time.sleep(120)
+                    waited += 120
+        if not no_handle:
+            try:
+                f = save_transcriptome_to_h5(f, data_dict)
+                f.close()
+                if backup and (not pulled):
+                    shutil.copy(h5_path, backup_path)
+            except Exception as e:
+                logging.error(traceback.format_exc())
+                print("Failed to update h5 database, which might be corrupted")
+        else:
+            print("Could not open h5 database, suspending...")
 
 
 def process_ribo_data(h5_path, ribo_paths, overwrite=False, low_memory=False):
@@ -155,7 +168,7 @@ def save_transcriptome_to_h5(f, data_dict):
             "canonical_prot_id",
         ]:
             if key != "id":
-                array = [a if a!=None else "" for a in array]
+                array = [a if a != None else "" for a in array]
             grp.create_dataset(
                 key, data=array, dtype=f"<S{max(1,max([len(s) for s in array]))}"
             )
