@@ -57,7 +57,7 @@ def parse_args():
         help="Don't remove duplicate ORFs resulting from the correction step.",
     )
     parser.add_argument(
-        "--include_annotated",
+        "--exclude_annotated",
         action="store_true",
         help="Include annotated CDS regions in generated GTF file containing predicted translated ORFs.",
     )
@@ -153,7 +153,7 @@ def main():
                 ribo=out,
             )
             if df is not None:
-                csv_to_gtf(f, df, out_prefix, not args.include_annotated)
+                csv_to_gtf(f, df, out_prefix, args.exclude_annotated)
         f.close()
 
 
