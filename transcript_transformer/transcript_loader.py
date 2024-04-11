@@ -182,12 +182,13 @@ class h5pyDataModule(pl.LightningDataModule):
         self.collate_fn = collate_fn
 
     def setup(self, stage=None):
-        self.fh = h5py.File(self.h5_path, "r")[self.exp_path]
-
+        f = h5py.File(self.h5_path, "r")[self.exp_path]
+        self.seqn_list = np.array(f[self.seqn_path])
+        self.transcript_lens = np.array(f["tr_len"])
         # evaluate conditions
         global_masks = []
         for key, cond_f in self.cond["global"].items():
-            mask = cond_f(np.array(self.fh[key]))
+            mask = cond_f(np.array(f[key]))
             if (key != "tr_len") and (self.leaky_frac > 0):
                 prob_mask = np.random.uniform(size=len(mask)) > (1 - self.leaky_frac)
                 mask[prob_mask] = True
@@ -201,7 +202,7 @@ class h5pyDataModule(pl.LightningDataModule):
             for grp_idx, (key, cond_f) in enumerate(group.items()):
                 grouped_feature = np.add.reduce(
                     [
-                        np.array(self.fh[f"riboseq/{id}/5/{key}"])
+                        np.array(f[f"riboseq/{id}/5/{key}"])
                         for id in self.ribo_ids[grp_idx]
                     ]
                 )
@@ -213,14 +214,14 @@ class h5pyDataModule(pl.LightningDataModule):
                     mask[prob_mask] = True
                 group_mask.append(mask)
             group_masks.append(np.logical_and.reduce(group_mask))
-
+        f.file.close()
         # derive train/validation/test sets
         has_train_seqns = len(self.seqns["train"]) > 0
         has_val_seqns = len(self.seqns["val"]) > 0
         has_test_seqns = len(self.seqns["test"]) > 0
         filled_sets = sum([has_train_seqns, has_val_seqns, has_test_seqns])
         if filled_sets == 2:
-            seqns = np.unique(self.fh[self.seqn_path])
+            seqns = np.unique(self.seqn_list)
             if len(self.seqns["train"]) == 0:
                 self.seqns["train"] = np.setdiff1d(
                     seqns, np.hstack((self.seqns["val"], self.seqns["test"]))
@@ -240,7 +241,7 @@ class h5pyDataModule(pl.LightningDataModule):
             if len(self.seqns["test"]) > 0:
                 print(f"--> Test seqnames: {[t.decode() for t in self.seqns['test']]}")
             # train set
-            seqn_mask = np.isin(self.fh[self.seqn_path], np.array(self.seqns["train"]))
+            seqn_mask = np.isin(self.seqn_list, np.array(self.seqns["train"]))
             mask = np.logical_and(global_mask, seqn_mask)
             self.tr_idx, self.tr_len, self.tr_idx_adj = self.prepare_sets(
                 mask, group_masks
@@ -248,7 +249,7 @@ class h5pyDataModule(pl.LightningDataModule):
             print(f"--> Training set transcripts: {len(self.tr_idx)}")
             assert len(self.tr_idx) > 0, "No transcripts in training data"
             # validation set
-            seqn_mask = np.isin(self.fh[self.seqn_path], self.seqns["val"])
+            seqn_mask = np.isin(self.seqn_list, self.seqns["val"])
             if self.strict_validation:
                 # global_masks[0] is transcript length maskq
                 mask = np.logical_and(seqn_mask, global_masks[0])
@@ -264,7 +265,7 @@ class h5pyDataModule(pl.LightningDataModule):
             assert len(self.val_idx) > 0, "No transcripts in validation data"
         if stage in ["test", "predict"] or stage is None:
             print(f"--> Test seqnames: {[t.decode() for t in self.seqns['test']]}")
-            seqn_mask = np.isin(self.fh[self.seqn_path], self.seqns["test"])
+            seqn_mask = np.isin(self.seqn_list, self.seqns["test"])
             # mask = np.logical_and(seqn_mask, global_masks[0])
             mask = np.logical_and(seqn_mask, global_masks[0])
             self.te_idx, self.te_len, self.te_idx_adj = self.prepare_sets(
@@ -277,10 +278,9 @@ class h5pyDataModule(pl.LightningDataModule):
     def prepare_sets(self, mask, group_conds):
         mask_set = []
         len_set = []
-        tr_len = np.array(self.fh["tr_len"])
         for cond_mask in group_conds:
             mask_set.append(np.logical_and(cond_mask, mask))
-            len_set.append(tr_len[mask_set[-1]])
+            len_set.append(self.transcript_lens[mask_set[-1]])
         mask_all = np.hstack(mask_set)
         lens = np.hstack(len_set)
         idxs = np.where(mask_all)[0]
@@ -297,7 +297,7 @@ class h5pyDataModule(pl.LightningDataModule):
         )
         return DataLoader(
             h5pyDatasetBatches(
-                self.fh,
+                self.h5_path,
                 self.y_path,
                 self.tr_id_path,
                 self.use_seq,
@@ -322,7 +322,7 @@ class h5pyDataModule(pl.LightningDataModule):
         )
         return DataLoader(
             h5pyDatasetBatches(
-                self.fh,
+                self.h5_path,
                 self.y_path,
                 self.tr_id_path,
                 self.use_seq,
@@ -346,7 +346,7 @@ class h5pyDataModule(pl.LightningDataModule):
         )
         return DataLoader(
             h5pyDatasetBatches(
-                self.fh,
+                self.h5_path,
                 self.y_path,
                 self.tr_id_path,
                 self.use_seq,
@@ -370,7 +370,7 @@ class h5pyDataModule(pl.LightningDataModule):
         )
         return DataLoader(
             h5pyDatasetBatches(
-                self.fh,
+                self.h5_path,
                 self.y_path,
                 self.tr_id_path,
                 self.use_seq,
@@ -388,7 +388,7 @@ class h5pyDataModule(pl.LightningDataModule):
 class h5pyDatasetBatches(torch.utils.data.Dataset):
     def __init__(
         self,
-        fh,
+        h5_path,
         y_path,
         tr_id_path,
         use_seq,
@@ -398,7 +398,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         batches,
     ):
         super().__init__()
-        self.fh = fh
+        self.h5_path = h5_path
         self.ribo_ids = ribo_ids
         self.y_path = y_path
         self.tr_id_path = tr_id_path
@@ -410,7 +410,12 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.batches)
 
+    def open_hdf5(self):
+        self.fh = h5py.File(self.h5_path, "r")["transcript"]
+
     def __getitem__(self, index):
+        if not hasattr(self, "fh"):
+            self.open_hdf5()
         # Transformation is performed when a sample is requested
         x_ids = []
         xs = []
@@ -421,9 +426,6 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             x_dict = {}
             # get seq data
             if self.use_seq:
-                if len(self.fh["seq"][idx]) == 0:
-                    print(idx, index)
-                    print(self.fh["seq"][idx])
                 x_dict["seq"] = self.fh["seq"][idx]
                 id_prefix = ""
             # get ribo data

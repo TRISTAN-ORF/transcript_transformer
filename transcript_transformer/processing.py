@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import h5max
 from tqdm import tqdm
@@ -12,7 +13,7 @@ from .util_functions import (
     transcript_region_to_exons,
 )
 
-headers = [
+HEADERS = [
     "id",
     "contig",
     "biotype",
@@ -33,7 +34,7 @@ headers = [
 ]
 
 
-out_headers = [
+OUT_HEADERS = [
     "seqname",
     "ORF_id",
     "tr_id",
@@ -75,7 +76,7 @@ out_headers = [
     "prot",
 ]
 
-decode = [
+DECODE = [
     "seqname",
     "tr_id",
     "tr_biotype",
@@ -85,6 +86,80 @@ decode = [
     "gene_id",
     "gene_name",
     "canonical_prot_id",
+]
+
+RIBOTIE_MQC_HEADER = """
+# parent_id: 'ribotie'
+# parent_name: "RiboTIE"
+# parent_description: "Overview of open reading frames called as translating by RiboTIE"
+# """
+
+START_CODON_MQC_HEADER = """
+# id: 'ribotie_start_codon_counts' 
+# section_name: 'Start Codon'
+# description: "Start codon counts of all open reading frames called by RiboTIE"
+# plot_type: 'bargraph'
+# anchor: 'orf_start_codon_counts'
+# pconfig:
+#     id: "orf_start_codon_counts_plot"
+#     title: "RiboTIE: Start Codons"
+#     colors:
+#          ATG : "#f8d7da"
+#     xlab: "# ORFs"
+#     cpswitch_counts_label: "Number of ORFs"
+"""
+
+BIOTYPE_VARIANT_MQC_HEADER = """
+# id: 'ribotie_biotype_counts_variant'
+# section_name: 'Transcript Biotypes (CDS Variant)'
+# description: "Transcript biotypes of 'CDS variant' (see ORF types) open reading frames called by RiboTIE"
+# plot_type: 'bargraph'
+# anchor: 'transcript_biotype_variant_counts'
+# pconfig:
+#     id: "transcript_biotype_counts_variant_plot"
+#     title: "RiboTIE: Transcript Biotypes (CDS Variant)"
+#     xlab: "# ORFs"
+#     cpswitch_counts_label: "Number of ORFs"
+"""
+
+ORF_TYPE_MQC_HEADER = """
+# id: 'ribotie_orftype_counts'
+# section_name: 'ORF types'
+# description: "ORF types of all open reading frames called by RiboTIE"
+# plot_type: 'bargraph'
+# anchor: 'transcript_orftype_counts'
+# pconfig:
+#     id: "transcript_orftype_counts_plot"
+#     title: "RiboTIE: ORF Types"
+#     xlab: "# ORFs"
+#     cpswitch_counts_label: "Number of ORFs"
+"""
+
+ORF_LEN_MQC_HEADER = """
+# id: 'ribotie_orflen_hist'
+# section_name: 'ORF lengths'
+# description: "ORF lengths of all open reading frames called by RiboTIE"
+# plot_type: 'linegraph'
+# anchor: 'transcript_orflength_hist'
+# pconfig:
+#     id: "transcript_orflength_hist_plot"
+#     title: "RiboTIE: ORF lengths"
+#     xlab: "Length"
+#     xLog: "True"
+"""
+
+ORF_TYPE_ORDER = [
+    "annotated CDS",
+    "N-terminal truncation",
+    "N-terminal extension",
+    "CDS variant",
+    "uORF",
+    "uoORF",
+    "dORF",
+    "doORF",
+    "intORF",
+    "lncRNA-ORF",
+    "other",
 ]
 
 
@@ -140,7 +215,7 @@ def construct_output_table(
         ]
         orf_dict.update({"seq_output": seq_out})
     orf_dict.update(
-        {f"{header}": np.array(f[f"{header}"])[orf_dict["f_idx"]] for header in headers}
+        {f"{header}": np.array(f[f"{header}"])[orf_dict["f_idx"]] for header in HEADERS}
     )
     orf_dict.update(orf_dict)
     df_out = pd.DataFrame(data=orf_dict)
@@ -320,11 +395,11 @@ def construct_output_table(
     df_out["ORF_equals_CDS"] = is_cds
     df_out.loc[df_out["tr_biotype"] == b"lncRNA", "ORF_type"] = "lncRNA-ORF"
     # decode strs
-    for header in decode:
+    for header in DECODE:
         df_out[header] = df_out[header].str.decode("utf-8")
     df_out["ORF_id"] = df_out["tr_id"] + "_" + df_out["TIS_pos"].astype(str)
     # re-arrange columns
-    o_headers = [h for h in out_headers if h in df_out.columns]
+    o_headers = [h for h in OUT_HEADERS if h in df_out.columns]
     df_out = df_out.loc[:, o_headers].sort_values("output_rank")
     # remove duplicates
     if correction and remove_duplicates:
@@ -376,6 +451,46 @@ def process_seq_preds(ids, preds, seqs, min_prob):
     return df
 
 
+def create_multiqc_reports(df, out_prefix):
+    # Start codons
+    output = out_prefix + ".start_codons_mqc.tsv"
+    with open(output, "w") as f:
+        f.write(RIBOTIE_MQC_HEADER)
+        f.write(START_CODON_MQC_HEADER)
+    df.start_codon.value_counts().to_csv(output, sep="\t", header=False, mode="a")
+
+    # Transcript biotypes
+    output = out_prefix + ".biotypes_variant_mqc.tsv"
+    with open(output, "w") as f:
+        f.write(RIBOTIE_MQC_HEADER)
+        f.write(BIOTYPE_VARIANT_MQC_HEADER)
+    df[df.ORF_type == "CDS variant"].tr_biotype.value_counts().to_csv(
+        output, sep="\t", header=False, mode="a"
+    )
+
+    # ORF types
+    output = out_prefix + ".ORF_types_mqc.tsv"
+    with open(output, "w") as f:
+        f.write(RIBOTIE_MQC_HEADER)
+        f.write(ORF_TYPE_MQC_HEADER)
+    orf_types = pd.Series(index=ORF_TYPE_ORDER, data=0)
+    counts = df.ORF_type.value_counts()
+    orf_types[counts.index] = counts
+    orf_types.to_csv(output, sep="\t", header=False, mode="a")
+
+    # ORF lengths
+    # output = out_prefix + ".ORF_lens_mqc.tsv"
+    # ax = df.ORF_len.apply(lambda x: np.log(x)).plot.kde()
+    # x, y = np.exp(ax.lines[-1].get_xdata()), ax.lines[-1].get_ydata()
+    # with open(output, "w") as f:
+    #     f.write(RIBOTIE_MQC_HEADER)
+    #     f.write(ORF_LEN_MQC_HEADER)
+    #     for x_, y_ in zip(x, y):
+    #         f.write(f"{x_}\t{y_}\n")
+
+    return
+
+
 def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
     """convert RiboTIE result table to GTF
     Args:
@@ -390,11 +505,14 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
     if exclude_annotated:
         df = df.filter(pl.col("ORF_type") != "annotated CDS")
     df = df.fill_null("NA")
+    df = df.sort("tr_id")
     f_ids = np.array(f["transcript/id"])
+    # fast id mapping
     xsorted = np.argsort(f_ids)
     pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["tr_id"])]
+    # obtain exons
     exon_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
-    gtf_parts = []
+    gff_parts = []
     for tis, stop_codon_start, strand, exons in zip(
         df["TIS_coord"], df["TTS_coord"], df["strand"], exon_coords
     ):
@@ -410,10 +528,7 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
             stop_parts, stop_exons = transcript_region_to_exons(
                 stop_codon_start, stop_codon_stop, strand, exons
             )
-            if strand == "+":
-                tts = stop_codon_start - 1
-            else:
-                tts = stop_codon_start + 1
+            tts = find_distant_exon_coord(stop_codon_start, -1, strand, exons)
         else:
             stop_parts, stop_exons = np.empty(start_parts.shape), np.empty(
                 start_exons.shape
@@ -436,10 +551,17 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
                 np.full(len(stop_exons), "stop_codon"),
             ]
         ).reshape(-1, 1)
-        gtf_parts.append(np.hstack([coords_packed, exons_packed, features_packed]))
+        gff_parts.append(np.hstack([coords_packed, exons_packed, features_packed]))
     gtf_lines = []
+    tr_suffix = 1
+    prev_tr = ""
     for i, row in enumerate(df.iter_rows(named=True)):
-        for start, stop, exon, feature in gtf_parts[i]:
+        if row["tr_id"] == prev_tr:
+            tr_suffix += 1
+        else:
+            prev_tr = row["tr_id"]
+            tr_suffix = 1
+        for start, stop, exon, feature in gff_parts[i]:
             gtf_lines.append(
                 row["seqname"]
                 + "\tRiboTIE\t"
@@ -454,6 +576,7 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
                 + row["gene_id"]
                 + '"; transcript_id "'
                 + row["tr_id"]
+                + f":{tr_suffix}"
                 + '"; ORF_id "'
                 + row["ORF_id"]
                 + '"; model_output "'

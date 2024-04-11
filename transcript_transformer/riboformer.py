@@ -10,7 +10,7 @@ from .transcript_transformer import train, predict
 from .argparser import Parser, parse_config_file
 from .pretrained import riboformer_models
 from .data import process_seq_data, process_ribo_data
-from .processing import construct_output_table, csv_to_gtf
+from .processing import construct_output_table, csv_to_gtf, create_multiqc_reports
 
 
 def parse_args():
@@ -154,6 +154,8 @@ def main():
             )
             if df is not None:
                 csv_to_gtf(f, df, out_prefix, args.exclude_annotated)
+                os.makedirs(f"{args.out_prefix}/multiqc", exist_ok=True)
+                create_multiqc_reports(df, f"{args.out_prefix}/multiqc/{ribo_set_str}")
         f.close()
 
 
