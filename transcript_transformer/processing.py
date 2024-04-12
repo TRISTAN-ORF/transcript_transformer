@@ -491,7 +491,7 @@ def create_multiqc_reports(df, out_prefix):
     return
 
 
-def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
+def csv_to_gtf(f, df, out_prefix, exclude_annotated=False):
     """convert RiboTIE result table to GTF
     Args:
         csv_path (str): path to result table
@@ -500,8 +500,6 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=True):
         output_th (float, optional): Model output threshold to determine positive set. Defaults to 0.15.
         filt_TTS_on_tr (bool, optional): Exclude predictions with no valid TTS. Defaults to True.
     """
-
-    df = pl.from_pandas(df)
     if exclude_annotated:
         df = df.filter(pl.col("ORF_type") != "annotated CDS")
     df = df.fill_null("NA")

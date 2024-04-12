@@ -1,6 +1,7 @@
 import os
 import sys
 import numpy as np
+import polars as pl
 import yaml
 import h5py
 from importlib import resources as impresources
@@ -153,7 +154,7 @@ def main():
                 ribo=out,
             )
             if df is not None:
-                csv_to_gtf(f, df, out_prefix, args.exclude_annotated)
+                csv_to_gtf(f, pl.from_pandas(df), out_prefix, args.exclude_annotated)
                 os.makedirs(f"{args.out_prefix}/multiqc", exist_ok=True)
                 create_multiqc_reports(df, f"{args.out_prefix}/multiqc/{ribo_set_str}")
         f.close()
