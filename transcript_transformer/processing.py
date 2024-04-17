@@ -552,13 +552,7 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=False):
         gff_parts.append(np.hstack([coords_packed, exons_packed, features_packed]))
     gtf_lines = []
     tr_suffix = 1
-    prev_tr = ""
     for i, row in enumerate(df.iter_rows(named=True)):
-        if row["tr_id"] == prev_tr:
-            tr_suffix += 1
-        else:
-            prev_tr = row["tr_id"]
-            tr_suffix = 1
         for start, stop, exon, feature in gff_parts[i]:
             gtf_lines.append(
                 row["seqname"]
@@ -573,8 +567,7 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=False):
                 + '\t0\tgene_id "'
                 + row["gene_id"]
                 + '"; transcript_id "'
-                + row["tr_id"]
-                + f":{tr_suffix}"
+                + row["orf_id"]
                 + '"; ORF_id "'
                 + row["ORF_id"]
                 + '"; model_output "'
