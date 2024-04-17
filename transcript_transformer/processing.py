@@ -567,7 +567,7 @@ def csv_to_gtf(f, df, out_prefix, exclude_annotated=False):
                 + '\t0\tgene_id "'
                 + row["gene_id"]
                 + '"; transcript_id "'
-                + row["orf_id"]
+                + row["ORF_id"]
                 + '"; ORF_id "'
                 + row["ORF_id"]
                 + '"; model_output "'
