@@ -1,5 +1,4 @@
 num_tokens: 8
-
 dim: 48
 depth: 8
 heads: 8

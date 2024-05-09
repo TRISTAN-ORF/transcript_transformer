@@ -113,47 +113,76 @@ def vec2DNA(tr_seq, np_dict=np.array(["A", "T", "C", "G", "N"])):
     return "".join(np_dict[tr_seq])
 
 
-def divide_seqnames(seqname_count_dict, num_chunks):
-    arr = np.array(list(seqname_count_dict.values()))
-    labels = np.array(list(seqname_count_dict.keys()))
-    idxs = np.argsort(arr)[::-1]
-    arr = np.sort(arr)[::-1]
+def divide_keys_by_size(size_dict, num_chunks):
+    """divide units in parts that resemble in size
+
+    Args:
+        size_dict (dict): size of each unit
+        num_chunks (int): number of parts
+
+    Returns:
+        dict: nested dict with unit (key) and size (value) for each part (outer).
+    """
+    sizes = np.array(list(size_dict.values()))
+    labels = np.array(list(size_dict.keys()))
+    idxs = np.argsort(sizes)[::-1]
+    sorted_labels = labels[idxs]
+    sorted_sizes = np.sort(sizes)[::-1]
+    # create list of tuples to store size of parts (size, part_id)
     heap = [(0, idx) for idx in range(num_chunks)]
     heapq.heapify(heap)
     sets_v = {}
     sets_k = {}
+    # init keys and values
     for i in range(num_chunks):
-        sets_v[i] = []
         sets_k[i] = []
+        sets_v[i] = []
     arr_idx = 0
-    while arr_idx < len(arr):
+    # for each element (large to small), add to part
+    while arr_idx < len(sorted_sizes):
+        # pop the smallest item from the list and add unit
         set_sum, set_idx = heapq.heappop(heap)
-        sets_k[set_idx].append(labels[idxs][arr_idx])
-        sets_v[set_idx].append(arr[idxs][arr_idx])
-        set_sum += arr[arr_idx]
+        sets_k[set_idx].append(sorted_labels[arr_idx])
+        sets_v[set_idx].append(sorted_sizes[arr_idx])
+        set_sum += sorted_sizes[arr_idx]
         heapq.heappush(heap, (set_sum, set_idx))
         arr_idx += 1
-
     folds = zip(sets_k.values(), sets_v.values())
+
     return {i: {x: y for x, y in zip(k, v)} for i, (k, v) in enumerate(folds)}
 
 
 def define_folds(seqn_size_dict, test=0.2, val=0.2):
+    """Finds closest possible folds for given seqnames.
+
+    Args:
+        seqn_size_dict (dict): nucleotide size for each seqname
+        test (float, optional): fraction of the test set. Defaults to 0.2.
+        val (float, optional): fraction of the validation set (excl. test fraction).
+            Defaults to 0.2.
+
+    Returns:
+        dict: nested dictionary containing seqnames of "train", "val", "test"(inner)
+        set for each fold (outer).
+    """
+
+    # find number of parts required to allow test set fraction
     test_chunks = int(np.ceil(1 / test))
     val_chunks_set = int(np.ceil(1 / val))
-    contig_set = np.array(list(seqn_size_dict.keys()))
-    if len(contig_set) < test_chunks:
-        test_chunks = len(contig_set)
+    seqname_set = np.array(list(seqn_size_dict.keys()))
+    if len(seqname_set) < test_chunks:
+        test_chunks = len(seqname_set)
         print(
             f"!-> Not enough seqnames to divide data, increasing test set"
             f" to {(1/test_chunks):.2f}% of full data"
         )
-    groups = divide_seqnames(seqn_size_dict, test_chunks)
+    # group seqnames in number of parts that will allow listed test set fraction
+    groups = divide_keys_by_size(seqn_size_dict, test_chunks)
     folds = {}
     for fold_i, group in groups.items():
-        mask = np.isin(contig_set, list(group.keys()))
-        test_set = contig_set[mask]
-        tr_val_set = contig_set[~mask]
+        mask = np.isin(seqname_set, list(group.keys()))
+        test_set = seqname_set[mask]
+        tr_val_set = seqname_set[~mask]
         tr_val_lens = {k: v for k, v in seqn_size_dict.items() if k in tr_val_set}
         if len(tr_val_lens) < val_chunks_set:
             val_chunks = len(tr_val_lens)
@@ -163,8 +192,8 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
             )
         else:
             val_chunks = val_chunks_set
-        tr_val_groups = divide_seqnames(tr_val_lens, val_chunks)
-        # Find group that is closest to queried partition
+        # Find number of parts required to allow val set fraction
+        tr_val_groups = divide_keys_by_size(tr_val_lens, val_chunks)
         tot_count = sum(tr_val_lens.values())
         val_counts = np.empty(val_chunks)
         for i, val in enumerate(tr_val_groups.values()):
@@ -178,7 +207,11 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
         val = [t.decode() for t in val_set]
         test = [t.decode() for t in test_set]
         print(f"\tFold {fold_i}: train: {tr}, val: {val}, test: {test}")
-        folds[fold_i] = {"train": train_set, "val": val_set, "test": test_set}
+        folds[fold_i] = {
+            "train": tr,
+            "val": val,
+            "test": test,
+        }
 
     return folds
 

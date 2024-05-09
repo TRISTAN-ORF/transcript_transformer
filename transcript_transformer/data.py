@@ -92,19 +92,17 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
             print("Could not open h5 database, suspending...")
 
 
-def process_ribo_data(h5_path, ribo_paths, overwrite=False, low_memory=False):
-    f = h5py.File(h5_path, "a")
-    if "riboseq" not in f["transcript"].keys():
-        f["transcript"].create_group("riboseq")
+def process_ribo_data(
+    h5_path, ribo_paths, overwrite=False, parallel=False, low_memory=False
+):
+    f = h5py.File(h5_path, "r")
     tr_ids = pl.from_numpy(np.array(f["transcript/id"])).to_series().cast(pl.Utf8)
     tr_lens = pl.from_numpy(np.array(f["transcript/tr_len"])).to_series()
     header_dict = {2: "tr_ID", 3: "pos", 9: "read"}
     ribo_to_parse = deepcopy(ribo_paths)
-    for experiment, path in ribo_paths.items():
-        if experiment in f["transcript/riboseq"].keys():
-            if overwrite:
-                del f[f"transcript/riboseq/{experiment}"]
-            else:
+    if "riboseq" in f["transcript"].keys():
+        for experiment, path in ribo_paths.items():
+            if experiment in f["transcript/riboseq"].keys() and (not overwrite):
                 print(
                     f"--> {experiment} in h5, omitting..."
                     "(use --overwrite for overwriting existing riboseq data)"
@@ -137,7 +135,15 @@ def process_ribo_data(h5_path, ribo_paths, overwrite=False, low_memory=False):
         riboseq_data = parse_ribo_reads(df, read_lens, tr_ids, tr_lens)
         try:
             print("Saving data...")
-            f = h5py.File(h5_path, "a")
+            if not parallel:
+                f = h5py.File(h5_path, "a")
+            else:
+                f = h5py.File(h5_path.split(".h5")[0] + f"_{experiment}.h5", "w")
+                f.create_group("transcript")
+            if "riboseq" not in f["transcript"].keys():
+                f["transcript"].create_group("riboseq")
+            if experiment in f["transcript/riboseq"].keys():
+                del f[f"transcript/riboseq/{experiment}"]
             f["transcript/riboseq"].create_group(experiment)
             exp_grp = f[f"transcript/riboseq/{experiment}"].create_group("5")
             h5max.store_sparse(exp_grp, riboseq_data, format="csr")
