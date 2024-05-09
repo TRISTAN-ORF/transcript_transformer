@@ -150,6 +150,7 @@ class h5pyDataModule(pl.LightningDataModule):
         cond=None,
         leaky_frac=0.05,
         collate_fn=collate_fn,
+        parallel=False,
     ):
         super().__init__()
         self.ribo_ids = ribo_ids
@@ -180,12 +181,14 @@ class h5pyDataModule(pl.LightningDataModule):
             self.cond = cond
         self.leaky_frac = leaky_frac
         self.collate_fn = collate_fn
+        self.parallel = parallel
 
     def setup(self, stage=None):
         f = h5py.File(self.h5_path, "r")[self.exp_path]
         self.seqn_list = np.array(f[self.seqn_path])
         self.transcript_lens = np.array(f["tr_len"])
         # evaluate conditions
+        # Identical mask over the samples applied to all datasets
         global_masks = []
         for key, cond_f in self.cond["global"].items():
             mask = cond_f(np.array(f[key]))
@@ -194,19 +197,29 @@ class h5pyDataModule(pl.LightningDataModule):
                 mask[prob_mask] = True
             global_masks.append(mask)
         global_mask = np.logical_and.reduce(global_masks)
-
+        # Masks over the samples applied per group of datasets
         group_masks = []
         for group in self.cond["grouped"]:
             group_mask = [np.full_like(global_mask, True)]
-
             for grp_idx, (key, cond_f) in enumerate(group.items()):
-                grouped_feature = np.add.reduce(
-                    [
-                        np.array(f[f"riboseq/{id}/5/{key}"])
-                        for id in self.ribo_ids[grp_idx]
+                # collect read counts for all samples in group
+                if self.parallel:
+                    read_data = []
+                    for ribo_id in self.ribo_ids[grp_idx]:
+                        h5_ribo_path = f"{self.h5_path.split('.h5')[0]}_{ribo_id}.h5"
+                        r = h5py.File(h5_ribo_path, "r")[self.exp_path]
+                        read_data.append(np.array(r[f"riboseq/{ribo_id}/5/{key}"]))
+                        r.file.close()
+                else:
+                    read_data = [
+                        np.array(f[f"riboseq/{ribo_id}/5/{key}"])
+                        for ribo_id in self.ribo_ids[grp_idx]
                     ]
-                )
+                grouped_feature = np.add.reduce(read_data)
+                # apply function given in config file
                 mask = cond_f(grouped_feature)
+                # if data filtering is not based on transcript length,
+                # allow leaky filtering
                 if (key != "tr_len") and (self.leaky_frac > 0):
                     prob_mask = np.random.uniform(size=len(mask)) > (
                         1 - self.leaky_frac
@@ -305,6 +318,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 self.offsets,
                 self.tr_idx_adj,
                 batches,
+                self.parallel,
             ),
             collate_fn=collate_fn,
             num_workers=self.num_workers,
@@ -330,6 +344,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 self.offsets,
                 self.val_idx_adj,
                 batches,
+                self.parallel,
             ),
             collate_fn=self.collate_fn,
             num_workers=self.num_workers,
@@ -354,6 +369,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 self.offsets,
                 self.te_idx_adj,
                 batches,
+                self.parallel,
             ),
             collate_fn=self.collate_fn,
             num_workers=self.num_workers,
@@ -378,6 +394,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 self.offsets,
                 self.te_idx_adj,
                 batches,
+                self.parallel,
             ),
             collate_fn=self.collate_fn,
             num_workers=self.num_workers,
@@ -396,6 +413,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         offsets,
         idx_adj,
         batches,
+        parallel,
     ):
         super().__init__()
         self.h5_path = h5_path
@@ -406,12 +424,21 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
         self.offsets = offsets
         self.idx_adj = idx_adj
         self.batches = batches
+        self.parallel = parallel
 
     def __len__(self):
         return len(self.batches)
 
     def open_hdf5(self):
-        self.fh = h5py.File(self.h5_path, "r")["transcript"]
+        if self.parallel:
+            h5_base = self.h5_path.split(".h5")[0]
+            # flatten nested list
+            flat_ids = sum(self.ribo_ids, [])
+            self.r = {
+                id: h5py.File(f"{h5_base}_{id}.h5", "r")["transcript"]
+                for id in flat_ids
+            }
+        self.f = h5py.File(self.h5_path, "r")["transcript"]
 
     def __getitem__(self, index):
         if not hasattr(self, "fh"):
@@ -426,19 +453,23 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
             x_dict = {}
             # get seq data
             if self.use_seq:
-                x_dict["seq"] = self.fh["seq"][idx]
+                x_dict["seq"] = self.f["seq"][idx]
                 id_prefix = ""
             # get ribo data
             else:
-                # obtain data set and adjuster
+                # determine data set from grouped (concatenated) datasets
                 set_idx = idx_conc // self.idx_adj
                 x_merge = []
                 ribo_set = self.ribo_ids[set_idx]
+                # iterate ribo-seq experiments in merged (summed) datasets
                 for i, ribo_id in enumerate(ribo_set):
                     if i == 0:
                         id_prefix = "&".join(ribo_set) + "|"
                     ribo_path = f"riboseq/{ribo_id}/5"
-                    x = load_sparse(self.fh[ribo_path], idx, format="csr").T
+                    if self.parallel:
+                        x = load_sparse(self.r[ribo_id][ribo_path], idx, format="csr").T
+                    else:
+                        x = load_sparse(self.f[ribo_path], idx, format="csr").T
                     if self.offsets is not None:
                         for col_i, (_, shift) in enumerate(
                             self.offsets[ribo_id].items()
@@ -452,7 +483,7 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
                         # get total number of reads per position
                         x = x.sum(axis=1)
                     x_merge.append(x)
-                # sum over multiple data sets (when applicable)
+                # sum merged data sets
                 x = np.sum(x_merge, axis=0)
                 if self.offsets is not None:
                     # normalize including all positions,reads
@@ -461,9 +492,9 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
                     # normalize including all positions,reads
                     x_dict["ribo"] = x / np.maximum(np.sum(x, axis=1).max(), 1)
             # get transcript IDs
-            x_ids.append(id_prefix.encode() + self.fh[self.tr_id_path][idx])
+            x_ids.append(id_prefix.encode() + self.f[self.tr_id_path][idx])
             xs.append(x_dict)
-            ys.append(self.fh[self.y_path][idx])
+            ys.append(self.f[self.y_path][idx])
         return [x_ids, xs, ys]
 
 

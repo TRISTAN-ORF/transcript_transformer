@@ -20,7 +20,7 @@ from .transcript_loader import (
 from .util_functions import DNA2vec
 from .processing import process_seq_preds
 from .data import process_seq_data, process_ribo_data
-from .argparser import Parser, parse_config_file
+from .argparser import Parser
 
 
 def parse_args():
@@ -44,8 +44,7 @@ def parse_args():
     if args.command == "data":
         parser = Parser(stage="data", description="Parse data in the h5 file")
         parser.add_data_args()
-        args = parser.parse_args(sys.argv[2:])
-        args = parse_config_file(args)
+        args = parser.parse_arguments(sys.argv[2:])
         process_seq_data(
             args.h5_path, args.gtf_path, args.fa_path, args.backup_path, ~args.no_backup
         )
@@ -63,8 +62,7 @@ def parse_args():
         parser.add_comp_args()
         parser.add_evaluation_args()
         parser.add_architecture_args()
-        args = parser.parse_args(sys.argv[2:])
-        args = parse_config_file(args)
+        args = parser.parse_arguments(sys.argv[2:])
         assert not (
             args.use_ribo and args.use_seq
         ), "One input type allowed for self-supervised objective"
@@ -81,8 +79,7 @@ def parse_args():
         parser.add_comp_args()
         parser.add_evaluation_args()
         parser.add_architecture_args()
-        args = parser.parse_args(sys.argv[2:])
-        args = parse_config_file(args)
+        args = parser.parse_arguments(sys.argv[2:])
         args.mlm, args.mask_frac, args.rand_frac = False, False, False
         train(args)
     else:
@@ -94,9 +91,7 @@ def parse_args():
         parser.add_comp_args()
         parser.add_evaluation_args()
         parser.add_preds_args()
-        args = parser.parse_args(sys.argv[2:])
-        if args.input_type == "config":
-            args = parse_config_file(args)
+        args = parser.parse_arguments(sys.argv[2:])
         predict(args)
 
 
@@ -167,6 +162,7 @@ def train(args, test_model=True, enable_model_summary=True):
         cond=args.cond,
         leaky_frac=args.leaky_frac,
         collate_fn=collate_fn,
+        parallel=args.parallel,
     )
     checkpoint_callback = ModelCheckpoint(
         monitor="val_loss",
@@ -240,7 +236,7 @@ def predict(args, trainer=None, model=None, postprocess=True):
         ckpt_path = None
     else:
         ckpt_path = "best"
-    if args.input_type == "config":
+    if args.input_type == "hdf5":
         tr_loader = h5pyDataModule(
             args.h5_path,
             args.exp_path,
@@ -258,13 +254,14 @@ def predict(args, trainer=None, model=None, postprocess=True):
             num_workers=args.num_workers,
             cond=args.cond,
             collate_fn=collate_fn,
+            parallel=args.parallel,
         )
     else:
         if args.input_type == "RNA":
             tr_seqs = args.input_data.upper()
             x_data = [DNA2vec(tr_seqs)]
             tr_ids = ["seq_1"]
-        elif args.input_type == "fa":
+        elif args.input_type == "fasta":
             tr_ids = []
             tr_seqs = []
             for item in read_fasta(args.input_data):
@@ -284,7 +281,7 @@ def predict(args, trainer=None, model=None, postprocess=True):
     ids = list(itertools.chain(*[o[2] for o in out]))
     preds = list(itertools.chain(*[o[0] for o in out]))
 
-    if args.input_type == "config":
+    if args.input_type == "hdf5":
         targets = list(itertools.chain(*[o[1] for o in out]))
         out = [ids, preds, targets]
     else:

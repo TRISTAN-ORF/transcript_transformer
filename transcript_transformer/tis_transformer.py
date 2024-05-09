@@ -1,23 +1,21 @@
 import os
 import sys
 import numpy as np
-import yaml
 import h5py
 from importlib import resources as impresources
-from argparse import Namespace
 
 from .transcript_transformer import train, predict
-from .argparser import Parser, parse_config_file
+from .argparser import Parser
 from .util_functions import define_folds
-from .pretrained import tis_transformer_models
+from . import configs
 from .data import process_seq_data
 from .processing import construct_output_table
 
 
 def parse_args():
-    parser = Parser(description="Run Ribo-former", stage="train")
-    parser.add_data_args()
-    parser.add_argument(
+    parser = Parser(description="Run TIS Transformer", stage="train")
+    data_parser = parser.add_data_args()
+    data_parser.add_argument(
         "--factor",
         type=float,
         default=1,
@@ -25,19 +23,19 @@ def parse_args():
         "This factor is multiplied to the number of canonical "
         "TISs present on evaluated transcripts.",
     )
-    parser.add_argument(
+    data_parser.add_argument(
         "--prob_cutoff",
         type=float,
         default=0.03,
         help="Determines the minimum model output score required for model "
         "predictions to be included in the result table.",
     )
-    parser.add_argument(
+    data_parser.add_argument(
         "--data",
         action="store_true",
         help="only perform pre-processing of data",
     )
-    parser.add_argument(
+    data_parser.add_argument(
         "--results",
         action="store_true",
         help="only perform processing of model predictions",
@@ -47,11 +45,8 @@ def parse_args():
     parser.add_train_loading_args(pretrain=False)
     parser.add_evaluation_args()
     parser.add_architecture_args()
-    args = load_args(
-        (impresources.files(tis_transformer_models) / "default_config.yml")
-    )
-    args.__dict__.update(**vars(parser.parse_args(sys.argv[1:])))
-    args = parse_config_file(args)
+    default_config = f"{impresources.files(configs) / 'tis_transformer_defaults.yml'}"
+    args = parser.parse_arguments(sys.argv[1:], [default_config])
     if args.out_prefix is None:
         args.out_prefix = os.path.splitext(args.input_config)[0]
     assert ~args.results and ~args.data, (
@@ -66,13 +61,6 @@ def parse_args():
     return args
 
 
-def load_args(path):
-    with open(path, "r") as fh:
-        input_config = yaml.safe_load(fh)
-
-    return Namespace(**input_config)
-
-
 def main():
     args = parse_args()
     prefix = f"{args.out_prefix}_seq"
@@ -83,11 +71,13 @@ def main():
     if not (args.data or args.results):
         args.use_seq = True
         args.use_ribo = False
-        args.input_type = "config"
+        args.input_type = "hdf5"
+        # determine optimal allocation of seqnames to train/val/test set
         f = h5py.File(args.h5_path, "r")["transcript"]
         contigs = np.array(f["contig"])
         tr_lens = np.array(f["tr_len"])
-        f.close()
+        f.file.close()
+        # determine nt count per seqname
         contig_set = np.unique(contigs)
         contig_lens = {}
         for contig in contig_set:

@@ -1,6 +1,8 @@
+import os
 import json
 import yaml
 import argparse
+import importlib
 import numpy as np
 
 
@@ -9,21 +11,65 @@ class Parser(argparse.ArgumentParser):
         super().__init__(
             formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs
         )
+        self.add_argument(
+            "conf",
+            nargs="*",
+            help="paths to YAML or JSON formatted arguments",
+        )
         if stage == "train":
             self.add_misc_args()
-        if stage != "predict":
-            self.add_argument(
-                "input_config",
-                type=str,
-                help="config file (dict) containing input data info",
-            )
 
     def add_data_args(self):
         input_parse = self.add_argument_group("Data processing arguments")
         input_parse.add_argument(
+            "--gtf_path", type=str, help="(Required) path to assembly gtf file."
+        )
+        input_parse.add_argument(
+            "--fa_path", type=str, help="(Required) path to assembly reference sequence"
+        )
+        input_parse.add_argument(
+            "--h5_path",
+            type=str,
+            help="(Required) path used for generating hdf5 file",
+        )
+        input_parse.add_argument(
+            "--ribo_paths",
+            type=json.loads,
+            help="dictionary containing ribosome sample ID's and path to reads mapped to transcriptome (.bam)."
+            " recommended to define in config file",
+        )
+        input_parse.add_argument(
+            "--samples",
+            type=str,
+            nargs="+",
+            help="samples to process. These have to be listed in 'ribo_paths'. Allows merging of reads of  "
+            "multiple samples. --samples can also be used to process part of your "
+            "database, e.g., in combination with running --parallel",
+        )
+        input_parse.add_argument(
+            "--out_prefix",
+            type=str,
+            help="output prefix used for all output files, defaults to derivative of 'h5_path'",
+        )
+        input_parse.add_argument(
+            "--cond",
+            type=json.loads,
+            default='{"ribo": {"num_reads": "x > 6"}}',
+            help="remove transcripts from training based on transcript properties. This does not affect "
+            "transcripts in validation/test sets. Currently only supports number of mapped riboseq reads "
+            "property. Can filter per dataset. See template.yml file for more examples",
+        )
+        input_parse.add_argument(
             "--overwrite",
             action="store_true",
             help="overwrite ribo-seq data when id is already present in h5 file",
+        )
+        input_parse.add_argument(
+            "--parallel",
+            action="store_true",
+            help="create separate hdf5 databases for ribo-seq samples, used when parallalizing "
+            "workflows (e.g., with snakemake). This prevents potential read/write"
+            " problems that arise when multiple separate processes use the same database",
         )
         input_parse.add_argument(
             "--no_backup",
@@ -37,6 +83,11 @@ class Parser(argparse.ArgumentParser):
             help="path to backup location (defaults to GTF folder location)",
         )
         input_parse.add_argument(
+            "--offsets",
+            type=json.loads,
+            help="(NOT RECOMMENDED) functionality only exists for benchmarking purposes.",
+        )
+        input_parse.add_argument(
             "--low_memory",
             action="store_true",
             help="polars setting that trades memory for perfomance. use on low-memory devices.",
@@ -47,6 +98,8 @@ class Parser(argparse.ArgumentParser):
             default=8,
             help="number of processor cores used for data processing",
         )
+
+        return input_parse
 
     def add_comp_args(self):
         comp_parse = self.add_argument_group("Computational resources arguments")
@@ -76,6 +129,8 @@ class Parser(argparse.ArgumentParser):
         comp_parse.add_argument(
             "--devices", type=int, default=1, nargs="+", help="GPU device to use"
         )
+
+        return comp_parse
 
     def add_architecture_args(self):
         tf_parse = self.add_argument_group("Model architecture arguments")
@@ -165,6 +220,8 @@ class Parser(argparse.ArgumentParser):
             help="window size of local attention",
         )
 
+        return tf_parse
+
     def add_predict_loading_args(self):
         dl_parse = self.add_argument_group("Data loading arguments")
         dl_parse.add_argument(
@@ -198,7 +255,9 @@ class Parser(argparse.ArgumentParser):
             help="maximum of transcripts per batch",
         )
 
-    def add_train_loading_args(self, pretrain=False):
+        return dl_parse
+
+    def add_train_loading_args(self, pretrain=False, auto=False):
         dl_parse = self.add_argument_group("Data loading arguments")
         if not pretrain:
             dl_parse.add_argument(
@@ -206,28 +265,29 @@ class Parser(argparse.ArgumentParser):
                 type=str,
                 help="Path to checkpoint pretrained model",
             )
-        dl_parse.add_argument(
-            "--train",
-            type=str,
-            nargs="*",
-            default=[],
-            help="chromosomes used for training. If not specified, "
-            "training is performed on all available chromosomes excluding val/test contigs",
-        )
-        dl_parse.add_argument(
-            "--val",
-            type=str,
-            nargs="*",
-            default=[],
-            help="chromosomes used for validation",
-        )
-        dl_parse.add_argument(
-            "--test",
-            type=str,
-            nargs="*",
-            default=[],
-            help="chromosomes used for testing",
-        )
+        if not auto:
+            dl_parse.add_argument(
+                "--train",
+                type=str,
+                nargs="*",
+                default=[],
+                help="chromosomes used for training. If not specified, "
+                "training is performed on all available chromosomes excluding val/test contigs",
+            )
+            dl_parse.add_argument(
+                "--val",
+                type=str,
+                nargs="*",
+                default=[],
+                help="chromosomes used for validation",
+            )
+            dl_parse.add_argument(
+                "--test",
+                type=str,
+                nargs="*",
+                default=[],
+                help="chromosomes used for testing",
+            )
         dl_parse.add_argument(
             "--strict_validation",
             action="store_true",
@@ -259,8 +319,16 @@ class Parser(argparse.ArgumentParser):
             help="maximum of transcripts per batch",
         )
 
+        return dl_parse
+
     def add_training_args(self):
         tr_parse = self.add_argument_group("Model training arguments")
+        tr_parse.add_argument(
+            "--pretrain",
+            action="store_true",
+            help="pretrain model using all available samples. Highly recommended for riboformer"
+            " if no suitable pre-trained model is not available (e.g., when applied on new species)",
+        )
         tr_parse.add_argument(
             "--log_dir",
             type=str,
@@ -297,6 +365,8 @@ class Parser(argparse.ArgumentParser):
             "to stop training",
         )
 
+        return tr_parse
+
     def add_selfsupervised_args(self):
         ss_parse = self.add_argument_group("Self-supervised training arguments")
         ss_parse.add_argument(
@@ -312,6 +382,8 @@ class Parser(argparse.ArgumentParser):
             help="fraction of inputs that are randomized",
         )
 
+        return ss_parse
+
     def add_evaluation_args(self):
         ev_parse = self.add_argument_group("Model evaluation arguments")
         ev_parse.add_argument(
@@ -324,6 +396,8 @@ class Parser(argparse.ArgumentParser):
             " set. These can require substantial vRAM and cause OOM crashes",
         )
 
+        return ev_parse
+
     def add_custom_data_args(self):
         cd_parse = self.add_argument_group("Custom data loading arguments")
         cd_parse.add_argument(
@@ -335,10 +409,13 @@ class Parser(argparse.ArgumentParser):
         cd_parse.add_argument(
             "input_type",
             type=str,
+            default="hdf5",
             metavar="input_type",
             help="type of input",
-            choices=["config", "fa", "RNA"],
+            choices=["hdf5", "fasta", "RNA"],
         )
+
+        return cd_parse
 
     def add_preds_args(self):
         pr_parse = self.add_argument_group("Model prediction processing arguments")
@@ -355,70 +432,101 @@ class Parser(argparse.ArgumentParser):
             help="path (prefix) of output files, ignored if using config input file",
         )
 
+        return pr_parse
+
     def add_misc_args(self):
         ms_parse = self.add_argument_group("Miscellaneous arguments")
         ms_parse.add_argument(
             "--debug",
             action="store_true",
-            help="debug mode disables logging and checkpointing (only for train)",
+            help="debug mode disables logging and checkpointing (only for training)",
+        )
+        ms_parse.add_argument(
+            "--version",
+            action="version",
+            version=importlib.metadata.version("transcript-transformer"),
         )
 
+        return ms_parse
 
-def parse_config_file(args):
-    # DEFAULT VALUES (overwritten if present)
-    args.exp_path = "transcript"
-    args.y_path = "tis"
-    args.seqn_path = "contig"
-    args.id_path = "id"
-    args.out_prefix = None
-    args.offsets = None
-    args.ribo_ids = []
-    args.cond = None
+    def parse_arguments(self, argv, configs=[]):
+        # update default values (before --help is called)
+        model_dir = ""
+        for conf in configs:
+            with open(conf, "r") as f:
+                if conf[-4:] == "json":
+                    input_config = json.load(f)
+                else:
+                    input_config = yaml.safe_load(f)
+                if "pretrained_model" in input_config.keys():
+                    model_dir = os.path.dirname(os.path.realpath(f.name))
+                self.set_defaults(**input_config)
+        # parse arguments
+        args = self.parse_args(argv)
+        # read passed config file
+        for conf in args.conf:
+            with open(conf, "r") as f:
+                if conf[-4:] == "json":
+                    input_config = json.load(f)
+                else:
+                    input_config = yaml.safe_load(f)
+                self.set_defaults(**input_config)
+        # override config file with bash inputs
+        args = self.parse_args()
+        args.model_dir = model_dir
+        # backward compatibility
+        if "seq" in args:
+            args.use_seq = args.seq
+        args.use_ribo = (
+            ("ribo_paths" in args)
+            and (type(args.ribo_paths) == dict)
+            and (len(args.ribo_paths) > 0)
+        )
+        if args.h5_path:
+            args.h5_path = f"{args.h5_path.split('.h5')[0].split('.hdf5')[0]}.h5"
 
-    # read dict and add to args
-    with open(args.input_config, "r") as fh:
-        if args.input_config[-4:] == "json":
-            input_config = json.load(fh)
+        # ribo takes precedence over ribo_paths
+        if args.use_ribo:
+            if (args.samples is not None) and (len(args.samples) > 0):
+                args.ribo_ids = [r if type(r) == list else [r] for r in args.samples]
+            else:
+                args.ribo_ids = [[r] for r in args.ribo_paths.keys()]
+            flat_ids = sum(args.ribo_ids, [])
+            assert len(np.unique(flat_ids)) == len(
+                flat_ids
+            ), "ribo_id is used multiple times"
         else:
-            input_config = yaml.safe_load(fh)
-    args.__dict__.update(input_config)
+            args.ribo_ids = []
 
-    # backward compatibility
-    if "seq" in args:
-        args.use_seq = args.seq
-    cond_1 = (
-        ("ribo_paths" in args)
-        and (type(args.ribo_paths) == dict)
-        and (len(args.ribo_paths) > 0)
-    )
-    cond_2 = ("ribo" in args) and (len(args.ribo) > 0)
-    args.use_ribo = cond_1 or cond_2
+        # no "&" allowed in ribo_ids
+        assert all(
+            ["&" not in id for id in np.array(args.ribo_ids).ravel()]
+        ), "No & character allowed in sample IDs..."
 
-    # ribo takes precedence over ribo_paths
-    if args.use_ribo:
-        if "ribo" in args:
-            args.ribo_ids = [r if type(r) == list else [r] for r in args.ribo]
-        else:
-            args.ribo_ids = [[r] for r in args.ribo_paths.keys()]
-        flat_ids = sum(args.ribo_ids, [])
-        assert len(np.unique(flat_ids)) == len(
-            flat_ids
-        ), "ribo_id is used multiple times"
-
-    # no "&" allowed in ribo_ids
-    assert all(
-        ["&" not in id for id in np.array(args.ribo_ids).ravel()]
-    ), "No & character allowed in sample IDs..."
-
-    # conditions used to remove transcripts from training/validation data
-    conds = {"global": {}, "grouped": [{} for l in range(len(args.ribo_ids))]}
-    conds["global"]["tr_len"] = lambda x: np.logical_and(
-        x > args.min_seq_len, x < args.max_seq_len
-    )
-    if args.cond is not None:
-        if "ribo" in args.cond.keys() and args.use_ribo:
-            # key is overwritten if condition present for multiple group members
-            for key, item in args.cond["ribo"].items():
+        # conditions used to remove transcripts from training/validation data
+        conds = {"global": {}, "grouped": [{} for l in range(len(args.ribo_ids))]}
+        conds["global"]["tr_len"] = lambda x: np.logical_and(
+            x > args.min_seq_len, x < args.max_seq_len
+        )
+        if args.cond is not None:
+            if "ribo" in args.cond.keys() and args.use_ribo:
+                # key is overwritten if condition present for multiple group members
+                for key, item in args.cond["ribo"].items():
+                    if type(item) == dict:
+                        # add condition to listed data sets
+                        for id, cond in item.items():
+                            grp_idx = [
+                                i for i, grp in enumerate(args.ribo_ids) if id in grp
+                            ]
+                            tmp_dict = {f"{key}": lambda x: eval(cond)}
+                            conds["grouped"][grp_idx[0]].update(tmp_dict)
+                    else:
+                        # add condition to all groups
+                        for grp_idx, grp in enumerate(args.ribo_ids):
+                            tmp_dict = {f"{key}": lambda x: eval(item)}
+                            conds["grouped"][grp_idx].update(tmp_dict)
+                del args.cond["ribo"]
+            for key, item in args.cond.items():
                 if type(item) == dict:
                     # add condition to listed data sets
                     for id, cond in item.items():
@@ -428,23 +536,16 @@ def parse_config_file(args):
                         tmp_dict = {f"{key}": lambda x: eval(cond)}
                         conds["grouped"][grp_idx[0]].update(tmp_dict)
                 else:
-                    # add condition to all groups
-                    for grp_idx, grp in enumerate(args.ribo_ids):
-                        tmp_dict = {f"{key}": lambda x: eval(item)}
-                        conds["grouped"][grp_idx].update(tmp_dict)
-            del args.cond["ribo"]
-        for key, item in args.cond.items():
-            if type(item) == dict:
-                # add condition to listed data sets
-                for id, cond in item.items():
-                    grp_idx = [i for i, grp in enumerate(args.ribo_ids) if id in grp]
-                    tmp_dict = {f"{key}": lambda x: eval(cond)}
-                    conds["grouped"][grp_idx[0]].update(tmp_dict)
-            else:
-                # add global condition
-                tmp_dict = {f"{key}": lambda x: eval(item)}
-                conds["global"].update(tmp_dict)
+                    # add global condition
+                    tmp_dict = {f"{key}": lambda x: eval(item)}
+                    conds["global"].update(tmp_dict)
 
-    args.cond = conds
+        args.cond = conds
 
-    return args
+        # Default values
+        args.exp_path = "transcript"
+        args.y_path = "tis"
+        args.seqn_path = "contig"
+        args.id_path = "id"
+        print(args)
+        return args

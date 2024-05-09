@@ -1,9 +1,10 @@
-import os
 import numpy as np
-import h5max
 from tqdm import tqdm
+import h5py
+import h5max
 import pandas as pd
 import polars as pl
+
 
 from .util_functions import (
     construct_prot,
@@ -162,9 +163,27 @@ ORF_TYPE_ORDER = [
     "other",
 ]
 
+ORF_BIOTYPE_ORDER = [
+    "retained_intron",
+    "protein_coding",
+    "protein_coding_CDS_not_defined",
+    "nonsense_mediated_decay",
+    "processed_pseudogene",
+    "unprocessed_pseudogene",
+    "transcribed_unprocessed_pseudogene",
+    "transcribed_processed_pseudogene",
+    "translated_processed_pseudogene",
+    "transcribed_unitary_pseudogene",
+    "processed_transcript",
+    "TEC",
+    "artifact",
+    "non_stop_decay",
+    "misc_RNA",
+]
+
 
 def construct_output_table(
-    f,
+    h5_path,
     out_prefix,
     prob_cutoff=0.15,
     correction=False,
@@ -174,7 +193,9 @@ def construct_output_table(
     remove_duplicates=True,
     exclude_invalid_TTS=True,
     ribo=None,
+    parallel=False,
 ):
+    f = h5py.File(h5_path, "r")["transcript"]
     f_tr_ids = np.array(f["id"])
     has_seq_output = "seq_output" in f.keys()
     has_ribo_output = ribo is not None
@@ -321,9 +342,18 @@ def construct_output_table(
         ribo_subsets = np.array(ribo_id.split(b"&"))
         sparse_reads_set = []
         for subset in ribo_subsets:
-            sparse_reads = h5max.load_sparse(
-                f[f"riboseq/{subset.decode()}/5/"], df_out["f_idx"], to_numpy=False
-            )
+            if parallel:
+                r = h5py.File(f"{h5_path.split('.h5')[0]}_{subset.decode()}.h5")[
+                    "transcript"
+                ]
+                sparse_reads = h5max.load_sparse(
+                    r[f"riboseq/{subset.decode()}/5/"], df_out["f_idx"], to_numpy=False
+                )
+                r.file.close()
+            else:
+                sparse_reads = h5max.load_sparse(
+                    f[f"riboseq/{subset.decode()}/5/"], df_out["f_idx"], to_numpy=False
+                )
             sparse_reads_set.append(sparse_reads)
         sparse_reads = np.add.reduce(sparse_reads_set)
         df_out["reads_in_tr"] = np.array([s.sum() for s in sparse_reads])
@@ -409,6 +439,7 @@ def construct_output_table(
     df_out = df_out[df_out["ORF_len"] > min_ORF_len]
     df_out = df_out[df_out["start_codon"].str.contains(start_codons)]
     df_out.to_csv(f"{out_prefix}.csv", index=None)
+    f.file.close()
 
     return df_out
 
@@ -464,9 +495,10 @@ def create_multiqc_reports(df, out_prefix):
     with open(output, "w") as f:
         f.write(RIBOTIE_MQC_HEADER)
         f.write(BIOTYPE_VARIANT_MQC_HEADER)
-    df[df.ORF_type == "CDS variant"].tr_biotype.value_counts().to_csv(
-        output, sep="\t", header=False, mode="a"
-    )
+    orf_biotypes = pd.Series(index=ORF_BIOTYPE_ORDER, data=0)
+    counts = df[df.ORF_type == "CDS variant"].tr_biotype.value_counts()
+    orf_biotypes[counts.index] = counts
+    orf_biotypes.to_csv(output, sep="\t", header=False, mode="a")
 
     # ORF types
     output = out_prefix + ".ORF_types_mqc.tsv"
@@ -491,25 +523,20 @@ def create_multiqc_reports(df, out_prefix):
     return
 
 
-def csv_to_gtf(f, df, out_prefix, exclude_annotated=False):
-    """convert RiboTIE result table to GTF
-    Args:
-        csv_path (str): path to result table
-        gtf_path (str, optional): Path to gtf file. function appends lines if file already exists.
-        exclude_cdss (bool, optional): Exclude annotated coding sequences. Defaults to True.
-        output_th (float, optional): Model output threshold to determine positive set. Defaults to 0.15.
-        filt_TTS_on_tr (bool, optional): Exclude predictions with no valid TTS. Defaults to True.
-    """
+def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
+    """convert RiboTIE result table to GTF"""
     if exclude_annotated:
         df = df.filter(pl.col("ORF_type") != "annotated CDS")
     df = df.fill_null("NA")
     df = df.sort("tr_id")
+    f = h5py.File(h5_path, "r")
     f_ids = np.array(f["transcript/id"])
     # fast id mapping
     xsorted = np.argsort(f_ids)
     pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["tr_id"])]
     # obtain exons
     exon_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
+    f.close()
     gff_parts = []
     for tis, stop_codon_start, strand, exons in zip(
         df["TIS_coord"], df["TTS_coord"], df["strand"], exon_coords
