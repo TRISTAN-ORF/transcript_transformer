@@ -54,7 +54,7 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
         backup_path = os.path.splitext(gtf_path)[0] + ".h5"
     pulled = False
     if not os.path.isfile(h5_path) and os.path.isfile(backup_path):
-        print(f"Processed assembly data restored ({backup_path})")
+        print(f"--> Processed assembly data restored ({backup_path})")
         shutil.copy(backup_path, h5_path)
         pulled = True
 
@@ -62,7 +62,7 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
         f = h5py.File(h5_path, "r")
         if "transcript" in f.keys():
             print(
-                "--> parsed transcriptome directory found, "
+                "--> Parsed transcriptome directory found, "
                 "assembly information can not be re-processed (for existing h5 files)."
             )
         f.close()
@@ -100,14 +100,21 @@ def process_ribo_data(
     tr_lens = pl.from_numpy(np.array(f["transcript/tr_len"])).to_series()
     header_dict = {2: "tr_ID", 3: "pos", 9: "read"}
     ribo_to_parse = deepcopy(ribo_paths)
-    if "riboseq" in f["transcript"].keys():
-        for experiment, path in ribo_paths.items():
-            if experiment in f["transcript/riboseq"].keys() and (not overwrite):
-                print(
-                    f"--> {experiment} in h5, omitting..."
-                    "(use --overwrite for overwriting existing riboseq data)"
-                )
-                ribo_to_parse.pop(experiment)
+    for experiment, path in ribo_paths.items():
+        cond_1 = (
+            parallel and (not overwrite) and 
+            (os.path.isfile(h5_path.split(".h5")[0] + f"_{experiment}.h5"))
+        )
+        cond_2 = (
+            not (parallel or overwrite) and 
+            (f"transcript/riboseq/{experiment}" in f.keys())
+        )
+        if cond_1 or cond_2:
+            print(
+                f"--> {experiment} in h5, omitting..."
+                "(use --overwrite for overwriting existing riboseq data)"
+            )
+            ribo_to_parse.pop(experiment)
     f.close()
     for experiment, path in ribo_to_parse.items():
         print(f"Loading in {experiment}...")
