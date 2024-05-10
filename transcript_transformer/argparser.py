@@ -492,6 +492,7 @@ class Parser(argparse.ArgumentParser):
             else:
                 args.ribo_ids = [[r] for r in args.ribo_paths.keys()]
             flat_ids = sum(args.ribo_ids, [])
+            args.ribo_paths = {k:v for k,v in args.ribo_paths.items() if k in flat_ids}
             assert len(np.unique(flat_ids)) == len(
                 flat_ids
             ), "ribo_id is used multiple times"
