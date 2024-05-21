@@ -38,7 +38,7 @@ def slice_gen(
     sl = seq[start:end].seq
 
     if to_vec:
-        sl = list(map(lambda x: seq_dict[x], sl))
+        sl = list(map(lambda x: seq_dict[x.upper()], sl))
 
     if strand in ["-", -1, False]:
         if comp_dict is not None:
