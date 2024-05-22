@@ -330,6 +330,13 @@ class Parser(argparse.ArgumentParser):
             " if no suitable pre-trained model is not available (e.g., when applied on new species)",
         )
         tr_parse.add_argument(
+            "--folds",
+            type=json.loads,
+            default=None,
+            help="only for --pretrain. Recommended to leave empty to automatically detect folds of equal size. "\
+            "Dictionary containing the seqnames/contigs for the training, validation and test." \
+        )
+        tr_parse.add_argument(
             "--log_dir",
             type=str,
             default="models",
@@ -417,6 +424,7 @@ class Parser(argparse.ArgumentParser):
 
         return cd_parse
 
+    # TODO Cleanup
     def add_preds_args(self):
         pr_parse = self.add_argument_group("Model prediction processing arguments")
         pr_parse.add_argument(
@@ -474,9 +482,13 @@ class Parser(argparse.ArgumentParser):
         # override config file with bash inputs
         args = self.parse_args()
         args.model_dir = model_dir
+        # create output dir if non-existent
+        if args.out_prefix:
+            os.makedirs(os.path.dirname(args.out_prefix), exist_ok=True)
         # backward compatibility
         if "seq" in args:
             args.use_seq = args.seq
+        # determine presence of ribo samples
         args.use_ribo = (
             ("ribo_paths" in args)
             and (type(args.ribo_paths) == dict)

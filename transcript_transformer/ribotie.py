@@ -132,14 +132,16 @@ def main():
         contigs = np.array(f["contig"])
         tr_lens = np.array(f["tr_len"])
         f.file.close()
-        # determine nt count per seqname
         contig_set = np.unique(contigs)
-        contig_lens = {}
-        for contig in contig_set:
-            mask = contigs == contig
-            contig_lens[contig] = sum(tr_lens[mask])
-        folds = define_folds(contig_lens, test=0.5, val=0.2)
-        for i, fold in folds.items():
+        if args.folds == None:
+            contig_lens = {}
+            # determine nt count per seqname
+            for contig in contig_set:
+                mask = contigs == contig
+                contig_lens[contig] = sum(tr_lens[mask])
+            args.folds = define_folds(contig_lens, test=0.5, val=0.2)
+        
+        for i, fold in args.folds.items():
             args_set = deepcopy(args)
             args_set.__dict__.update(fold)
             args_set.out_prefix = args.out_prefix + f"pretrain_f{i}"
@@ -151,11 +153,11 @@ def main():
             ckpt_path = os.path.join(trainer.logger.log_dir, "checkpoints")
             ckpt_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[0])
             os.replace(ckpt_path, f"{args_set.out_prefix}.ckpt")
-            folds[i]["transfer_checkpoint"] = f"{args_set.out_prefix}.ckpt"
+            args.folds[i]["transfer_checkpoint"] = f"{args_set.out_prefix}.ckpt"
 
         with open(f"{args.out_prefix}pretrain.yml", "w+") as f:
             yaml.dump(
-                {"pretrained_model": {"folds": folds}, "patience": 1, "lr": 0.0008},
+                {"pretrained_model": {"folds": args.folds}, "patience": 1, "lr": 0.0008},
                 f,
                 default_flow_style=False,
             )
