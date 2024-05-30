@@ -54,7 +54,6 @@ class Parser(argparse.ArgumentParser):
         input_parse.add_argument(
             "--cond",
             type=json.loads,
-            default='{"ribo": {"num_reads": "x > 6"}}',
             help="remove transcripts from training based on transcript properties. This does not affect "
             "transcripts in validation/test sets. Currently only supports number of mapped riboseq reads "
             "property. Can filter per dataset. See template.yml file for more examples",

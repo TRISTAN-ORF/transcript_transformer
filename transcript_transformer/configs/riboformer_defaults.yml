@@ -20,3 +20,7 @@ lr: 0.001
 decay_rate: 0.96
 warmup_steps: 1500
 patience: 8
+cond :
+    ribo:
+      num_reads : "x > 6"
+
