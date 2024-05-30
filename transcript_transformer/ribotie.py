@@ -140,7 +140,6 @@ def main():
                 mask = contigs == contig
                 contig_lens[contig] = sum(tr_lens[mask])
             args.folds = define_folds(contig_lens, test=0.5, val=0.2)
-        args.ribo_ids = [[f"pretrain_f{i}"] for i, fold in args.folds.items()]
 
         if not args.results:
             for i, fold in args.folds.items():
@@ -156,6 +155,7 @@ def main():
                 ckpt_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[0])
                 os.replace(ckpt_path, f"{args_set.out_prefix}.ckpt")
                 args.folds[i]["transfer_checkpoint"] = f"{args_set.out_prefix}.ckpt"
+            args.folds[0]["test"] = []
 
             with open(f"{args.out_prefix}pretrain.yml", "w+") as f:
                 yaml.dump(
@@ -199,6 +199,8 @@ def main():
             merge_outputs(prefix, args.pretrained_model["folds"].keys())
 
     if not args.data:
+        if args.pretrain:
+            args.ribo_ids = [[f"pretrain_f{i}"] for i, fold in args.folds.items()]
         for ribo_set in args.ribo_ids:
             ribo_set_str = "&".join(ribo_set)
             out = np.load(f"{args.out_prefix}{ribo_set_str}.npy", allow_pickle=True)
