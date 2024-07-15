@@ -16,14 +16,6 @@ def parse_args():
     parser = Parser(description="Run TIS Transformer", stage="train")
     data_parser = parser.add_data_args()
     data_parser.add_argument(
-        "--factor",
-        type=float,
-        default=1,
-        help="Determines the number of model predictions in the result table."
-        "This factor is multiplied to the number of canonical "
-        "TISs present on evaluated transcripts.",
-    )
-    data_parser.add_argument(
         "--prob_cutoff",
         type=float,
         default=0.03,
@@ -48,7 +40,7 @@ def parse_args():
     default_config = f"{impresources.files(configs) / 'tis_transformer_defaults.yml'}"
     args = parser.parse_arguments(sys.argv[1:], [default_config])
     if args.out_prefix is None:
-        args.out_prefix = os.path.splitext(args.input_config)[0]
+        args.out_prefix = f"{os.path.splitext(args.conf[0])[0]}_"
     assert ~args.results and ~args.data, (
         "cannot only do processing of data and results, disable either"
         " --data_process or --result_process"
@@ -93,12 +85,9 @@ def main():
 
         f = h5py.File(args.h5_path, "a")
         grp = f["transcript"]
-        out = np.load(f"{prefix}.npy", allow_pickle=True)
-        construct_output_table(
-            grp, out, prefix, args.factor, args.prob_cutoff, ribo=args.use_ribo
-        )
         f_tr_ids = np.array(grp["id"])
         xsorted = np.argsort(f_tr_ids)
+        out = np.load(f"{prefix}.npy", allow_pickle=True)
         tr_ids = np.hstack([o[0] for o in out])
 
         pred_to_h5_args = xsorted[np.searchsorted(f_tr_ids[xsorted], tr_ids)]
@@ -129,9 +118,7 @@ def main():
                 f.close()
     if not args.data:
         f = h5py.File(args.h5_path, "r")
-        construct_output_table(
-            f["transcript"], f"{args.out_prefix}_seq", args.factor, args.prob_cutoff
-        )
+        construct_output_table(args.h5_path, f"{args.out_prefix}_seq", args.prob_cutoff)
         f.close()
 
 

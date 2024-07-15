@@ -102,12 +102,12 @@ def process_ribo_data(
     ribo_to_parse = deepcopy(ribo_paths)
     for experiment, path in ribo_paths.items():
         cond_1 = (
-            parallel and (not overwrite) and 
-            (os.path.isfile(h5_path.split(".h5")[0] + f"_{experiment}.h5"))
+            parallel
+            and (not overwrite)
+            and (os.path.isfile(h5_path.split(".h5")[0] + f"_{experiment}.h5"))
         )
-        cond_2 = (
-            not (parallel or overwrite) and 
-            (f"transcript/riboseq/{experiment}" in f.keys())
+        cond_2 = not (parallel or overwrite) and (
+            f"transcript/riboseq/{experiment}" in f.keys()
         )
         if cond_1 or cond_2:
             print(
@@ -318,7 +318,11 @@ def parse_transcriptome(gtf_path, fa_path):
                 data_dict["canonical_TIS_exon_idx"].append(exon_i)
                 data_dict["canonical_TIS_idx"].append(tis_idx)
                 data_dict["canonical_TTS_idx"].append(tis_idx + sum(cds_lens))
-                prot_id = gtf_tr["protein_id"].unique(maintain_order=True)[1]
+                # remove potential empty entries from protein_id ("")
+                prot_ids = (
+                    gtf_tr["protein_id"].to_frame().filter(pl.all() != "").to_series()
+                )
+                prot_id = prot_ids.unique(maintain_order=True)[0]
                 data_dict["canonical_prot_id"].append(prot_id)
                 data_dict["canonical_TIS_coord"].append(tis)
                 data_dict["canonical_TTS_coord"].append(tts)
