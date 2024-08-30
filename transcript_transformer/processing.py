@@ -529,10 +529,10 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
     df = df.fill_null("NA")
     df = df.sort("tr_id")
     f = h5py.File(h5_path, "r")
-    f_ids = np.array(f["transcript/tr_id"])
+    f_ids = np.array(f["transcript/id"])
     # fast id mapping
     xsorted = np.argsort(f_ids)
-    pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["id"])]
+    pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["tr_id"])]
     # obtain exons
     exons_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
     f.close()

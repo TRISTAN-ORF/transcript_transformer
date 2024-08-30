@@ -126,7 +126,7 @@ def process_ribo_data(
             df = pl.read_csv(
                 path,
                 has_header=False,
-                comment_char="@",
+                comment_prefix="@",
                 columns=[2, 3, 9],
                 dtypes=[pl.Utf8, pl.Int32, pl.Utf8],
                 separator="\t",
@@ -395,7 +395,7 @@ def parse_ribo_reads(df, read_lens, f_ids, f_lens):
     num_read_lens = len(read_lens)
     read_len_dict = {read_len: i for i, read_len in enumerate(read_lens)}
     print("Filtering on read lens...")
-    df = df.with_columns(pl.col("read").str.lengths().alias("read_len"))
+    df = df.with_columns(pl.col("read").str.len_chars().alias("read_len"))
     df = df.filter(pl.col("read_len").is_in(list(read_lens)))
     df = df.sort("tr_ID")
     id_lib = df["tr_ID"].unique(maintain_order=True)
