@@ -244,7 +244,7 @@ class Parser(argparse.ArgumentParser):
         dl_parse.add_argument(
             "--max_seq_len",
             type=int,
-            default=30000,
+            default=50000,
             help="maximum sequence length of transcripts",
         )
         dl_parse.add_argument(

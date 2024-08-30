@@ -10,12 +10,13 @@ from scipy import sparse
 from tqdm import tqdm
 import biobear as bb
 import polars as pl
-import pandas as pd
 
 import h5py
 import h5max
 import pyfaidx
 from gtfparse import read_gtf
+
+from .util_functions import vec2DNA, construct_prot
 
 
 def co_to_idx(start, end):
@@ -50,14 +51,16 @@ def slice_gen(
 
 
 def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
+    pulled = False
     if not backup_path:
         backup_path = os.path.splitext(gtf_path)[0] + ".h5"
-    pulled = False
-    if not os.path.isfile(h5_path) and os.path.isfile(backup_path):
+    if os.path.abspath(backup_path) == os.path.abspath(os.path.dirname(h5_path)):
+        print(f"!-> Backup path identical to h5 output path, disabling backup...")
+        backup=False
+    elif not os.path.isfile(h5_path) and os.path.isfile(backup_path):
         print(f"--> Processed assembly data restored ({backup_path})")
         shutil.copy(backup_path, h5_path)
         pulled = True
-
     if os.path.isfile(h5_path):
         f = h5py.File(h5_path, "r")
         if "transcript" in f.keys():
@@ -178,7 +181,7 @@ def save_transcriptome_to_h5(f, data_dict):
             "biotype",
             "tag",
             "support_lvl",
-            "canonical_prot_id",
+            "canonical_protein_id",
         ]:
             if key != "id":
                 array = [a if a != None else "" for a in array]
@@ -198,7 +201,7 @@ def save_transcriptome_to_h5(f, data_dict):
 def parse_transcriptome(gtf_path, fa_path):
     print("Loading assembly data...")
     genome = pyfaidx.Fasta(fa_path)
-    contig_list = pd.Series(genome.keys())
+    contig_list = pl.Series(genome.keys())
     gtf = read_gtf(gtf_path, result_type="polars")
     gtf = gtf.with_columns(pl.col("exon_number").cast(pl.Int32, strict=False))
     headers = {
@@ -233,7 +236,8 @@ def parse_transcriptome(gtf_path, fa_path):
         "canonical_TTS_idx": [],
         "canonical_TTS_coord": [],
         "tr_len": [],
-        "canonical_prot_id": [],
+        "canonical_protein_id": [],
+        "canonical_protein_seq": [],
     }
     assert "transcript_id" in gtf.columns, "transcript_id column missing in gtf file"
     assert "strand" in gtf.columns, "strand column missing in gtf file"
@@ -323,7 +327,7 @@ def parse_transcriptome(gtf_path, fa_path):
                     gtf_tr["protein_id"].to_frame().filter(pl.all() != "").to_series()
                 )
                 prot_id = prot_ids.unique(maintain_order=True)[0]
-                data_dict["canonical_prot_id"].append(prot_id)
+                data_dict["canonical_protein_id"].append(prot_id)
                 data_dict["canonical_TIS_coord"].append(tis)
                 data_dict["canonical_TTS_coord"].append(tts)
 
@@ -331,7 +335,7 @@ def parse_transcriptome(gtf_path, fa_path):
                 data_dict["canonical_TIS_exon_idx"].append(-1)
                 data_dict["canonical_TIS_idx"].append(-1)
                 data_dict["canonical_TTS_idx"].append(-1)
-                data_dict["canonical_prot_id"].append("")
+                data_dict["canonical_protein_id"].append("")
                 data_dict["canonical_TIS_coord"].append(-1)
                 data_dict["canonical_TTS_coord"].append(-1)
                 # some transcripts have CDSs but no start codons...
@@ -369,10 +373,19 @@ def parse_transcriptome(gtf_path, fa_path):
                 exon_coords.append(exon["end"])
                 exon_seqs.append(exon_seq)
             exon_idxs = np.vstack((cum_exon_lens[:-1], cum_exon_lens[1:])).T.ravel()
+            seq = np.concatenate(exon_seqs)
+
+            if len(start_codon) > 0:
+                DNA_frag = vec2DNA(seq[data_dict["canonical_TIS_idx"][-1] :])
+                prot, _, _ = construct_prot(DNA_frag)
+            else:
+                prot = ""
+
             data_dict["exon_idxs"].append(exon_idxs)
             data_dict["exon_coords"].append(np.array(exon_coords))
-            data_dict["seq"].append(np.concatenate(exon_seqs))
+            data_dict["seq"].append(seq)
             data_dict["tis"].append(target_seq)
+            data_dict["canonical_protein_seq"].append(prot)
             data_dict["contig"].append(contig)
 
     return data_dict

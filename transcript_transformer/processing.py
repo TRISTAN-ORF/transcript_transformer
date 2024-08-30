@@ -24,7 +24,7 @@ HEADERS = [
     "canonical_TIS_idx",
     "canonical_TTS_coord",
     "canonical_TTS_idx",
-    "canonical_prot_id",
+    "canonical_protein_id",
     "exon_coords",
     "exon_idxs",
     "gene_id",
@@ -73,8 +73,8 @@ OUT_HEADERS = [
     "canonical_TIS_idx",
     "canonical_TTS_coord",
     "canonical_TTS_idx",
-    "canonical_prot_id",
-    "prot",
+    "canonical_protein_id",
+    "protein_seq",
 ]
 
 DECODE = [
@@ -86,7 +86,7 @@ DECODE = [
     "strand",
     "gene_id",
     "gene_name",
-    "canonical_prot_id",
+    "canonical_protein_id",
 ]
 
 RIBOTIE_MQC_HEADER = """
@@ -522,7 +522,6 @@ def create_multiqc_reports(df, out_prefix):
 
     return
 
-
 def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
     """convert RiboTIE result table to GTF"""
     if exclude_annotated:
@@ -530,47 +529,54 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
     df = df.fill_null("NA")
     df = df.sort("tr_id")
     f = h5py.File(h5_path, "r")
-    f_ids = np.array(f["transcript/id"])
+    f_ids = np.array(f["transcript/tr_id"])
     # fast id mapping
     xsorted = np.argsort(f_ids)
-    pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["tr_id"])]
+    pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["id"])]
     # obtain exons
-    exon_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
+    exons_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
     f.close()
     gff_parts = []
-    for tis, stop_codon_start, strand, exons in zip(
-        df["TIS_coord"], df["TTS_coord"], df["strand"], exon_coords
+    for tis, stop_codon_start, strand, exon_coord in zip(
+        df["TIS_coord"], df["TTS_coord"], df["strand"], exons_coords
     ):
-        start_codon_stop = find_distant_exon_coord(tis, 2, strand, exons)
+        start_codon_stop = find_distant_exon_coord(tis, 2, strand, exon_coord)
         start_parts, start_exons = transcript_region_to_exons(
-            tis, start_codon_stop, strand, exons
+            tis, start_codon_stop, strand, exon_coord
         )
         # acquire cds stop coord from stop codon coord.
         if stop_codon_start != -1:
             stop_codon_stop = find_distant_exon_coord(
-                stop_codon_start, 2, strand, exons
+                stop_codon_start, 2, strand, exon_coord
             )
             stop_parts, stop_exons = transcript_region_to_exons(
-                stop_codon_start, stop_codon_stop, strand, exons
+                stop_codon_start, stop_codon_stop, strand, exon_coord
             )
-            tts = find_distant_exon_coord(stop_codon_start, -1, strand, exons)
+            tts = find_distant_exon_coord(stop_codon_start, -1, strand, exon_coord)
         else:
             stop_parts, stop_exons = np.empty(start_parts.shape), np.empty(
                 start_exons.shape
             )
             tts = -1
-
-        cds_parts, cds_exons = transcript_region_to_exons(tis, tts, strand, exons)
+        cds_parts, cds_exons = transcript_region_to_exons(tis, tts, strand, exon_coord)
+        tr_coord = np.array([exon_coord[0], exon_coord[-1]])
+        exons = np.arange(1, len(exon_coord) // 2 + 1)
         coords_packed = np.vstack(
             [
+                tr_coord.reshape(-1, 2),
+                exon_coord.reshape(-1, 2),
                 start_parts.reshape(-1, 2),
                 cds_parts.reshape(-1, 2),
                 stop_parts.reshape(-1, 2),
             ]
-        )
-        exons_packed = np.hstack([start_exons, cds_exons, stop_exons]).reshape(-1, 1)
+        ).astype(int)
+        exons_packed = np.hstack(
+            [[-1], exons, start_exons, cds_exons, stop_exons]
+        ).reshape(-1, 1)
         features_packed = np.hstack(
             [
+                np.full(1, "transcript"),
+                np.full(len(exons), "exon"),
                 np.full(len(start_exons), "start_codon"),
                 np.full(len(cds_exons), "CDS"),
                 np.full(len(stop_exons), "stop_codon"),
@@ -578,40 +584,36 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
         ).reshape(-1, 1)
         gff_parts.append(np.hstack([coords_packed, exons_packed, features_packed]))
     gtf_lines = []
-    tr_suffix = 1
     for i, row in enumerate(df.iter_rows(named=True)):
         for start, stop, exon, feature in gff_parts[i]:
+            property_list = [
+                f'gene_id "{row["gene_id"]}',
+                f'transcript_id "{row["ORF_id"]}',
+                f'ORF_id "{row["ORF_id"]}',
+                f'model_output "{row["output"]}',
+                f'ORF_type "{row["ORF_type"]}',
+                f'gene_name "{row["gene_name"]}',
+                f'transcript_biotype "{row["tr_biotype"]}',
+                f'tag "{row["tr_tag"]}',
+                f'transcript_support_level "{row["tr_support_lvl"]}',
+            ]
+            if exon != -1:
+                property_list.insert(5, f'exon_number "{exon}')
+            properties = '"; '.join(property_list)
             gtf_lines.append(
-                row["seqname"]
-                + "\tRiboTIE\t"
-                + feature
-                + "\t"
-                + start
-                + "\t"
-                + stop
-                + "\t.\t"
-                + row["strand"]
-                + '\t0\tgene_id "'
-                + row["gene_id"]
-                + '"; transcript_id "'
-                + row["ORF_id"]
-                + '"; ORF_id "'
-                + row["ORF_id"]
-                + '"; model_output "'
-                + f"{row['output']:.5}"
-                + '"; orf_type "'
-                + row["ORF_type"]
-                + '"; exon_number "'
-                + exon
-                + '"; gene_name "'
-                + row["gene_name"]
-                + '"; transcript_biotype "'
-                + row["tr_biotype"]
-                + '"; tag "'
-                + row["tr_tag"]
-                + '"; transcript_support_level "'
-                + row["tr_support_lvl"]
-                + '";\n'
+                "\t".join(
+                    [
+                        row["seqname"],
+                        "RiboTIE",
+                        feature,
+                        start,
+                        stop,
+                        ".",
+                        row["strand"],
+                        "0",
+                        properties + "\n",
+                    ]
+                )
             )
     with open(f"{out_prefix}.gtf", "w") as f:
         for line in gtf_lines:
