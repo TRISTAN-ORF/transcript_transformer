@@ -56,7 +56,7 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
         backup_path = os.path.splitext(gtf_path)[0] + ".h5"
     if os.path.abspath(backup_path) == os.path.abspath(os.path.dirname(h5_path)):
         print(f"!-> Backup path identical to h5 output path, disabling backup...")
-        backup=False
+        backup = False
     elif not os.path.isfile(h5_path) and os.path.isfile(backup_path):
         print(f"--> Processed assembly data restored ({backup_path})")
         shutil.copy(backup_path, h5_path)

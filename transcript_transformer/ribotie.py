@@ -111,7 +111,11 @@ def main():
     assert args.use_ribo, "No ribosome data specified."
     if not args.results:
         process_seq_data(
-            args.h5_path, args.gtf_path, args.fa_path, args.backup_path, ~args.no_backup
+            args.h5_path,
+            args.gtf_path,
+            args.fa_path,
+            args.backup_path,
+            not args.no_backup,
         )
         process_ribo_data(
             args.h5_path,

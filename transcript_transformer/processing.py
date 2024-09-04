@@ -600,7 +600,6 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
                     3,
                     f'exon_number "{exon}',
                 )
-
             if feature not in ["transcript", "exon"]:
                 property_list.insert(
                     3,
