@@ -604,7 +604,7 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
             if feature not in ["transcript", "exon"]:
                 property_list.insert(
                     3,
-                    f'ORF_id "{row["ORF_id"]}", model_output "{row["output"]}"; ORF_type "{row["ORF_type"]}"; exon_number "{exon}',
+                    f'ORF_id "{row["ORF_id"]}", model_output "{row["output"]}"; ORF_type "{row["ORF_type"]}',
                 )
             properties = '"; '.join(property_list)
             gtf_lines.append(
