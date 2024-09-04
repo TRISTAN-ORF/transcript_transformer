@@ -522,6 +522,7 @@ def create_multiqc_reports(df, out_prefix):
 
     return
 
+
 def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
     """convert RiboTIE result table to GTF"""
     if exclude_annotated:
@@ -589,16 +590,22 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
             property_list = [
                 f'gene_id "{row["gene_id"]}',
                 f'transcript_id "{row["ORF_id"]}',
-                f'ORF_id "{row["ORF_id"]}',
-                f'model_output "{row["output"]}',
-                f'ORF_type "{row["ORF_type"]}',
                 f'gene_name "{row["gene_name"]}',
                 f'transcript_biotype "{row["tr_biotype"]}',
                 f'tag "{row["tr_tag"]}',
                 f'transcript_support_level "{row["tr_support_lvl"]}',
             ]
-            if exon != -1:
-                property_list.insert(5, f'exon_number "{exon}')
+            if feature not in ["transcript"]:
+                property_list.insert(
+                    3,
+                    f'exon_number "{exon}',
+                )
+
+            if feature not in ["transcript", "exon"]:
+                property_list.insert(
+                    3,
+                    f'ORF_id "{row["ORF_id"]}", model_output "{row["output"]}"; ORF_type "{row["ORF_type"]}"; exon_number "{exon}',
+                )
             properties = '"; '.join(property_list)
             gtf_lines.append(
                 "\t".join(
@@ -611,7 +618,7 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
                         ".",
                         row["strand"],
                         "0",
-                        properties + "\n",
+                        properties + '";\n',
                     ]
                 )
             )
