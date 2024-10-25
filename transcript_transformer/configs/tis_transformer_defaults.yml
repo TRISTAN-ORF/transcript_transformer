@@ -16,3 +16,5 @@ emb_dropout: 0.1
 ff_dropout: 0.1
 attn_dropout: 0.1
 local_window_size: 256
+cond:
+    has_annotated_start_codon: "x"

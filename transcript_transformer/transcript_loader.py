@@ -1,9 +1,11 @@
 import h5py
 import numpy as np
 import torch
-from h5max import load_sparse
+from h5max import load_sparse_matrix
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
+
+from pdb import set_trace
 
 
 def collate_fn(batch):
@@ -56,7 +58,13 @@ def collate_fn(batch):
         else:
             arr = np.empty(shape=(len(batch[1]), max_len + 2), dtype=int)
             for i, (x, l) in enumerate(zip(batch[1], max_len - lens)):
-                arr[i] = np.concatenate(([5], x[k], [6], [7] * l))
+                try:
+                    arr[i] = np.concatenate(([5], x[k], [6], [7] * l))
+                except:
+                    print(k, len(x[k]), l)
+                    print(x[k])
+                    print(batch[0][i])
+                    set_trace()
             x_dict[k] = torch.LongTensor(arr)
 
     x_dict.update({"x_id": batch[0], "y": y_b})
@@ -186,13 +194,13 @@ class h5pyDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         f = h5py.File(self.h5_path, "r")[self.exp_path]
         self.seqn_list = np.array(f[self.seqn_path])
-        self.transcript_lens = np.array(f["tr_len"])
+        self.transcript_lens = np.array(f["transcript_len"])
         # evaluate conditions
         # Identical mask over the samples applied to all datasets
         global_masks = []
         for key, cond_f in self.cond["global"].items():
             mask = cond_f(np.array(f[key]))
-            if (key != "tr_len") and (self.leaky_frac > 0):
+            if (key != "transcript_len") and (self.leaky_frac > 0):
                 prob_mask = np.random.uniform(size=len(mask)) > (1 - self.leaky_frac)
                 mask[prob_mask] = True
             global_masks.append(mask)
@@ -220,7 +228,7 @@ class h5pyDataModule(pl.LightningDataModule):
                 mask = cond_f(grouped_feature)
                 # if data filtering is not based on transcript length,
                 # allow leaky filtering
-                if (key != "tr_len") and (self.leaky_frac > 0):
+                if (key != "transcript_len") and (self.leaky_frac > 0):
                     prob_mask = np.random.uniform(size=len(mask)) > (
                         1 - self.leaky_frac
                     )
@@ -467,9 +475,11 @@ class h5pyDatasetBatches(torch.utils.data.Dataset):
                         id_prefix = "&".join(ribo_set) + "|"
                     ribo_path = f"riboseq/{ribo_id}/5"
                     if self.parallel:
-                        x = load_sparse(self.r[ribo_id][ribo_path], idx, format="csr").T
+                        x = load_sparse_matrix(
+                            self.r[ribo_id][ribo_path], idx, format="csr"
+                        ).T
                     else:
-                        x = load_sparse(self.f[ribo_path], idx, format="csr").T
+                        x = load_sparse_matrix(self.f[ribo_path], idx, format="csr").T
                     if self.offsets is not None:
                         for col_i, (_, shift) in enumerate(
                             self.offsets[ribo_id].items()

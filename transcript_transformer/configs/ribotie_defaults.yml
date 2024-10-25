@@ -23,4 +23,5 @@ patience: 8
 cond :
     ribo:
       num_reads : "x > 6"
+    has_annotated_start_codon: "x"
 

@@ -1,7 +1,6 @@
 import os
 import sys
 import numpy as np
-import polars as pl
 import yaml
 import h5py
 from importlib import resources as impresources
@@ -9,7 +8,7 @@ from copy import deepcopy
 
 from .transcript_transformer import train, predict
 from .argparser import Parser
-from .pretrained import riboformer_models
+from .pretrained import ribotie_models
 from . import configs
 from .data import process_seq_data, process_ribo_data
 from .processing import construct_output_table, csv_to_gtf, create_multiqc_reports
@@ -22,7 +21,7 @@ def parse_args():
     data_parser.add_argument(
         "--prob_cutoff",
         type=float,
-        default=0.15,
+        default=0.125,
         help="Determines the minimum model output score required for model "
         "predictions to be included in the result table.",
     )
@@ -64,6 +63,11 @@ def parse_args():
         action="store_true",
         help="Include annotated CDS regions in generated GTF file containing predicted translated ORFs.",
     )
+    data_parser.add_argument(
+        "--unfiltered",
+        action="store_true",
+        help="Don't apply filtering of top predictions",
+    )
     # data_parser.add_argument(
     #     "--pretrained_model",
     #     type=json.loads,
@@ -84,7 +88,7 @@ def parse_args():
     parser.add_comp_args()
     parser.add_training_args()
     parser.add_train_loading_args(pretrain=True, auto=True)
-    default_config = f"{impresources.files(configs) / 'riboformer_defaults.yml'}"
+    default_config = f"{impresources.files(configs) / 'ribotie_defaults.yml'}"
     args = parser.parse_arguments(sys.argv[1:], [default_config])
     if args.out_prefix is None:
         args.out_prefix = f"{os.path.splitext(args.conf[0])[0]}_"
@@ -176,9 +180,9 @@ def main():
     if not (args.data or args.results or args.pretrain):
         if "pretrained_model" not in args:
             args = load_args(
-                (impresources.files(riboformer_models) / "50perc_06_23.yml"), args
+                (impresources.files(ribotie_models) / "50perc_06_23.yml"), args
             )
-            args.model_dir = str(impresources.files(riboformer_models)._paths[0])
+            args.model_dir = str(impresources.files(ribotie_models)._paths[0])
         for i, ribo_set in enumerate(args.ribo_ids):
             args_set = deepcopy(args)
             args_set.ribo_ids = [ribo_set]
@@ -221,13 +225,14 @@ def main():
                 exclude_invalid_TTS=not args.include_invalid_TTS,
                 ribo=out,
                 parallel=args.parallel,
+                unfiltered=args.unfiltered,
             )
             if df is not None:
-                csv_to_gtf(
-                    args.h5_path, pl.from_pandas(df), out_prefix, args.exclude_annotated
-                )
+                csv_to_gtf(args.h5_path, df, out_prefix, args.exclude_annotated)
                 os.makedirs(f"{args.out_prefix}/multiqc", exist_ok=True)
-                create_multiqc_reports(df, f"{args.out_prefix}/multiqc/{ribo_set_str}")
+                create_multiqc_reports(
+                    df, f"{os.path.dirname(args.out_prefix)}/multiqc/{ribo_set_str}"
+                )
 
 
 def merge_outputs(prefix, keys):

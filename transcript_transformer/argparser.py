@@ -271,7 +271,7 @@ class Parser(argparse.ArgumentParser):
                 nargs="*",
                 default=[],
                 help="chromosomes used for training. If not specified, "
-                "training is performed on all available chromosomes excluding val/test contigs",
+                "training is performed on all available chromosomes excluding val/test seqnames",
             )
             dl_parse.add_argument(
                 "--val",
@@ -483,7 +483,7 @@ class Parser(argparse.ArgumentParser):
         args.model_dir = model_dir
         # create output dir if non-existent
         if args.out_prefix:
-            os.makedirs(os.path.dirname(args.out_prefix), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(args.out_prefix)), exist_ok=True)
         # backward compatibility
         if "seq" in args:
             args.use_seq = args.seq
@@ -517,7 +517,7 @@ class Parser(argparse.ArgumentParser):
 
         # conditions used to remove transcripts from training/validation data
         conds = {"global": {}, "grouped": [{} for l in range(len(args.ribo_ids))]}
-        conds["global"]["tr_len"] = lambda x: np.logical_and(
+        conds["global"]["transcript_len"] = lambda x: np.logical_and(
             x > args.min_seq_len, x < args.max_seq_len
         )
         if args.cond is not None:
@@ -557,7 +557,7 @@ class Parser(argparse.ArgumentParser):
         # Default values
         args.exp_path = "transcript"
         args.y_path = "tis"
-        args.seqn_path = "contig"
-        args.id_path = "id"
+        args.seqn_path = "seqname"
+        args.id_path = "transcript_id"
         print(args)
         return args

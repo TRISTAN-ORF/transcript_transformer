@@ -40,7 +40,8 @@ def parse_args():
     default_config = f"{impresources.files(configs) / 'tis_transformer_defaults.yml'}"
     args = parser.parse_arguments(sys.argv[1:], [default_config])
     if args.out_prefix is None:
-        args.out_prefix = f"{os.path.splitext(args.conf[0])[0]}_"
+        print(args.conf[0])
+        args.out_prefix = f"{os.path.splitext(args.h5_path)[0]}_"
     assert ~args.results and ~args.data, (
         "cannot only do processing of data and results, disable either"
         " --data_process or --result_process"
@@ -66,8 +67,8 @@ def main():
         args.input_type = "hdf5"
         # determine optimal allocation of seqnames to train/val/test set
         f = h5py.File(args.h5_path, "r")["transcript"]
-        contigs = np.array(f["contig"])
-        tr_lens = np.array(f["tr_len"])
+        contigs = np.array(f["seqname"])
+        tr_lens = np.array(f["transcript_len"])
         f.file.close()
         # determine nt count per seqname
         contig_set = np.unique(contigs)
@@ -85,7 +86,7 @@ def main():
 
         f = h5py.File(args.h5_path, "a")
         grp = f["transcript"]
-        f_tr_ids = np.array(grp["id"])
+        f_tr_ids = np.array(grp["transcript_id"])
         xsorted = np.argsort(f_tr_ids)
         out = np.load(f"{prefix}.npy", allow_pickle=True)
         tr_ids = np.hstack([o[0] for o in out])
@@ -96,12 +97,12 @@ def main():
         for idx, (_, pred, _) in zip(pred_to_h5_args, out):
             pred_arr[idx] = pred
         dtype = h5py.vlen_dtype(np.dtype("float32"))
-        if "seq_output" in grp.keys():
+        if "tis_transformer_score" in grp.keys():
             print("--> Overwriting results in local h5 database...")
-            del grp["seq_output"]
+            del grp["tis_transformer_score"]
         else:
             print("--> Writing results to local h5 database...")
-        grp.create_dataset("seq_output", data=pred_arr, dtype=dtype)
+        grp.create_dataset("tis_transformer_score", data=pred_arr, dtype=dtype)
         f.close()
         if not args.no_backup:
             if not args.backup_path:
@@ -109,12 +110,12 @@ def main():
             if os.path.isfile(args.backup_path):
                 f = h5py.File(args.backup_path, "a")
                 grp = f["transcript"]
-                if "seq_output" in grp.keys():
+                if "tis_transformer_score" in grp.keys():
                     print("--> Overwriting results in backup h5 database...")
-                    del grp["seq_output"]
+                    del grp["tis_transformer_score"]
                 else:
                     print("--> Writing results to backup h5 database...")
-                grp.create_dataset("seq_output", data=pred_arr, dtype=dtype)
+                grp.create_dataset("tis_transformer_score", data=pred_arr, dtype=dtype)
                 f.close()
     if not args.data:
         f = h5py.File(args.h5_path, "r")

@@ -1,75 +1,7 @@
 from datetime import datetime
 import numpy as np
 import heapq
-
-
-cdn_prot_dict = {
-    "ATA": "I",
-    "ATC": "I",
-    "ATT": "I",
-    "ATG": "M",
-    "ACA": "T",
-    "ACC": "T",
-    "ACG": "T",
-    "ACT": "T",
-    "AAC": "N",
-    "AAT": "N",
-    "AAA": "K",
-    "AAG": "K",
-    "AGC": "S",
-    "AGT": "S",
-    "AGA": "R",
-    "AGG": "R",
-    "CTA": "L",
-    "CTC": "L",
-    "CTG": "L",
-    "CTT": "L",
-    "CCA": "P",
-    "CCC": "P",
-    "CCG": "P",
-    "CCT": "P",
-    "CAC": "H",
-    "CAT": "H",
-    "CAA": "Q",
-    "CAG": "Q",
-    "CGA": "R",
-    "CGC": "R",
-    "CGG": "R",
-    "CGT": "R",
-    "GTA": "V",
-    "GTC": "V",
-    "GTG": "V",
-    "GTT": "V",
-    "GCA": "A",
-    "GCC": "A",
-    "GCG": "A",
-    "GCT": "A",
-    "GAC": "D",
-    "GAT": "D",
-    "GAA": "E",
-    "GAG": "E",
-    "GGA": "G",
-    "GGC": "G",
-    "GGG": "G",
-    "GGT": "G",
-    "TCA": "S",
-    "TCC": "S",
-    "TCG": "S",
-    "TCT": "S",
-    "TTC": "F",
-    "TTT": "F",
-    "TTA": "L",
-    "TTG": "L",
-    "TAC": "Y",
-    "TAT": "Y",
-    "TAA": "_",
-    "TAG": "_",
-    "TGC": "C",
-    "TGT": "C",
-    "TGA": "_",
-    "TGG": "W",
-    "NNN": "_",
-}
+from transcript_transformer import CDN_PROT_DICT, PROT_IDX_DICT, DNA_IDX_DICT
 
 
 def construct_prot(seq):
@@ -91,13 +23,12 @@ def construct_prot(seq):
         if "N" in cdn:
             string += "_"
         else:
-            string += cdn_prot_dict[cdn]
+            string += CDN_PROT_DICT[cdn]
 
     return string, has_stop, stop_codon
 
 
-def DNA2vec(dna_seq):
-    seq_dict = {"A": 0, "T": 1, "U": 1, "C": 2, "G": 3, "N": 4}
+def DNA2vec(dna_seq, seq_dict=DNA_IDX_DICT):
     dna_vec = np.zeros(len(dna_seq), dtype=int)
     for idx in np.arange(len(dna_seq)):
         dna_vec[idx] = seq_dict[dna_seq[idx]]
@@ -105,12 +36,28 @@ def DNA2vec(dna_seq):
     return dna_vec
 
 
+def prot2vec(prot_seq, prot_dict=PROT_IDX_DICT):
+    prot_vec = np.zeros(len(prot_seq), dtype=int)
+    for idx in np.arange(len(prot_seq)):
+        prot_vec[idx] = prot_dict[prot_seq[idx]]
+
+    return list(prot_vec)
+
+
+def listify(array):
+    return [list(a) for a in array]
+
+
 def time():
     return datetime.now().strftime("%H:%M:%S %m-%d ")
 
 
-def vec2DNA(tr_seq, np_dict=np.array(["A", "T", "C", "G", "N"])):
-    return "".join(np_dict[tr_seq])
+def vec2DNA(vec, np_dict=np.array(["A", "T", "C", "G", "N"])):
+    return "".join(np_dict[vec])
+
+
+def vec2prot(vec, np_dict=np.array(list(PROT_IDX_DICT.keys()))):
+    return "".join(np_dict[vec])
 
 
 def divide_keys_by_size(size_dict, num_chunks):
@@ -223,8 +170,8 @@ def transcript_region_to_exons(
     stop coordinates must exist on exons.
 
     Args:
-        start_coord (str): start coordinate
-        stop_coord (str): stop coordinate, NOT start of stop codon for CDSs
+        start_coord (int) start coordinate
+        stop_coord (int): stop coordinate, NOT start of stop codon for CDSs
         strand (str): strand, either + or -
         exons (list): list of exon bound coordinates following gtf file conventions.
             E.g. positive strand: [1 2 4 5] negative strand: [4 5 1 2]
@@ -235,6 +182,8 @@ def transcript_region_to_exons(
             E.g. [{start_coord} 2 4 {stop_coord}]
     """
     pos_strand = strand == "+"
+    if type(exons) == list:
+        exons = np.array(exons)
     if stop_coord == -1:
         if pos_strand:
             stop_coord = exons[-1]
@@ -263,7 +212,7 @@ def transcript_region_to_exons(
         exon_idx_stop = len(exons) + 1
     exon_numbers = np.arange(exon_idx_start // 2, exon_idx_stop // 2)
 
-    return genome_parts, exon_numbers + 1
+    return list(genome_parts), list(exon_numbers + 1)
 
 
 def get_exon_dist_map(tr_regions, strand):
@@ -333,3 +282,39 @@ def find_distant_exon_coord(ref_coord, distance, strand, exons):
         dist_coord = -1
 
     return dist_coord
+
+
+def get_str2str_idx_map(source, dest):
+    xsorted = np.argsort(dest)
+    return xsorted[np.searchsorted(dest[xsorted], source)]
+
+
+def co_to_idx(start, end):
+    return start - 1, end
+
+
+def slice_gen(
+    seq,
+    start,
+    end,
+    strand,
+    co=True,
+    to_vec=True,
+    seq_dict={"A": 0, "T": 1, "C": 2, "G": 3, "N": 4},
+    comp_dict={0: 1, 1: 0, 2: 3, 3: 2, 4: 4},
+):
+    """get sequence following gtf-coordinate system"""
+    if co:
+        start, end = co_to_idx(start, end)
+    sl = seq[start:end].seq
+
+    if to_vec:
+        sl = list(map(lambda x: seq_dict[x.upper()], sl))
+
+    if strand in ["-", -1, False]:
+        if comp_dict is not None:
+            sl = list(map(lambda x: comp_dict[x], sl))[::-1]
+        else:
+            sl = sl[::-1]
+
+    return np.array(sl)
