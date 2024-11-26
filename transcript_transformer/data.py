@@ -15,7 +15,6 @@ import h5py
 import h5max
 import pyfaidx
 from gtfparse import read_gtf
-
 from .util_functions import vec2DNA, construct_prot, time, slice_gen, prot2vec
 
 REQ_HEADERS = [

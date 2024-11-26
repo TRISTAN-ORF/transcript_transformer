@@ -65,7 +65,7 @@ CDN_PROT_DICT = {
     "TGT": "C",
     "TGA": "_",
     "TGG": "W",
-    "NNN": "_",
+    "NNN": "X",
 }
 
 PROT_IDX_DICT = {
@@ -90,6 +90,8 @@ PROT_IDX_DICT = {
     "W": 18,
     "Y": 19,
     "V": 20,
+    "_": 21,
+    "X": 22,
 }
 
 DNA_IDX_DICT = {

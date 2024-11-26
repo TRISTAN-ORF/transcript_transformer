@@ -20,10 +20,10 @@ def construct_prot(seq):
 
     string = ""
     for cdn in cdn_seq:
-        if "N" in cdn:
-            string += "_"
-        else:
+        if cdn in CDN_PROT_DICT.keys():
             string += CDN_PROT_DICT[cdn]
+        else:
+            string += "X"
 
     return string, has_stop, stop_codon
 
