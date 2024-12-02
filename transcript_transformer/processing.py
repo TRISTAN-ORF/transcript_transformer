@@ -756,7 +756,7 @@ def create_multiqc_reports(df, out_prefix):
         orf_biotypes = (
             df.filter(pl.col("ORF_type") == "varRNA-ORF")["transcript_biotype"]
             .value_counts()
-            .sort(pl.col("transcript_biotype").cast(pl.Enum(ORF_BIOTYPE_ORDER)))
+            .sort("count", descending=True)
         )
         with open(output, mode="a") as f:
             orf_biotypes.write_csv(f, separator="\t", include_header=False)
