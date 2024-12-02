@@ -229,7 +229,7 @@ def main():
             )
             if df is not None:
                 csv_to_gtf(args.h5_path, df, out_prefix, args.exclude_annotated)
-                os.makedirs(f"{args.out_prefix}/multiqc", exist_ok=True)
+                os.makedirs(f"{os.path.dirname(args.out_prefix)}/multiqc", exist_ok=True)
                 create_multiqc_reports(
                     df, f"{os.path.dirname(args.out_prefix)}/multiqc/{ribo_set_str}"
                 )

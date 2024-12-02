@@ -370,7 +370,7 @@ def construct_output_table(
         # only data and indices of sparse object are required (all counts are summed over read lengths)
         for h in ["data", "indices", "indptr", "shape"]:
             if parallel:
-                ribo_data = np.add.reduce(
+                counts = np.add.reduce(
                     [
                         np.array(h5py.File(a)[f"{p}/{h}"])[df_ribo["h5_idx"]]
                         for a, p in ribo_paths
