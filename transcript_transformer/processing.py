@@ -850,7 +850,7 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
             property_list = [
                 f'gene_id "{row["gene_id"]}',
                 f'transcript_id "{row["ORF_id"]}',
-                # f'gene_name "{row["gene_name"]}',
+                f'gene_name "{row["gene_name"]}',
                 # f'transcript_biotype "{row["transcript_biotype"]}',
                 # f'tag "{row["tag"]}',
                 # f'transcript_support_level "{row["tr_support_lvl"]}',
