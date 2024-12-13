@@ -12,7 +12,6 @@ from transcript_transformer import (
     BIOTYPE_VARIANT_MQC_HEADER,
     ORF_TYPE_MQC_HEADER,
     ORF_TYPE_ORDER,
-    ORF_BIOTYPE_ORDER,
     IDX_PROT_DICT,
     IDX_DNA_DICT,
     STANDARD_HEADERS,
