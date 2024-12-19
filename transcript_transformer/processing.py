@@ -629,9 +629,18 @@ def construct_output_table(
             var_feats["shared_in_frame_CDS_frac"].append(out[0])
             var_feats["ORF_coords_no_CDS"].append(out[1])
             var_feats["shared_in_frame_CDS_region"].append(in_frame_CDSs)
-        df_grp = df_grp.join(pl.DataFrame(var_feats), on="ORF_id")
-        if len(df_grp) > 0:
-            df_grps.append(df_grp)
+        df_var_feats = pl.DataFrame(
+            var_feats,
+            schema={
+                "ORF_id": pl.String,
+                "shared_in_frame_CDS_region": pl.List(pl.String),
+                "shared_in_frame_CDS_frac": pl.Int64,
+                "ORF_coords_no_CDS": pl.List(pl.Int64),
+                "has_CDS_clones": pl.Boolean,
+            },
+        )
+        df_grp = df_grp.join(df_var_feats, on="ORF_id")
+        df_grps.append(df_grp)
     df = pl.concat(df_grps).with_columns(
         pl.col("shared_in_frame_CDS_frac").truediv(pl.col("ORF_len"))
     )
