@@ -73,6 +73,189 @@ def eval_overlap(ORF_id, CDS_exon_start, CDS_exon_end, ORF_exon_start, ORF_exon_
     return overlap, non_CDS_coords
 
 
+def parse_ribo_data(df, f, h5_path, ribo_id, parallel):
+    df_ribo = df.select("ORF_id", "h5_idx", "TIS_idx", "TTS_idx", "ORF_len")
+    # multiple sets in case of merged data sets
+    ribo_subsets = np.array(ribo_id.decode().split("&"))
+    ribo_paths = [
+        [
+            f"{h5_path.split('.h5')[0]}_{subset}.h5",
+            f"transcript/riboseq/{subset}/5/",
+        ]
+        for subset in ribo_subsets
+    ]
+    # only data and indices of sparse object are required (all counts are summed over read lengths)
+    csr_cols = ["data", "indices", "indptr", "shape"]
+    for h in csr_cols:
+        if parallel:
+            counts = np.add.reduce(
+                [
+                    np.array(h5py.File(a)[f"{p}/{h}"])[df_ribo["h5_idx"]]
+                    for a, p in ribo_paths
+                ]
+            )
+        else:
+            counts = np.add.reduce(
+                [np.array(f[f"{p}/{h}"])[df_ribo["h5_idx"]] for _, p in ribo_paths]
+            )
+        df_ribo = df_ribo.with_columns(
+            pl.Series(name=h, values=list(counts), dtype=pl.List(pl.Int32))
+        )
+    # Filter out results with 0 reads (only happens when training on zero-read data)
+    df_ribo = df_ribo.filter(pl.col("data").cast(pl.List(pl.Int32)).list.len() > 0)
+    # Polars autoconverts empty list columns to array types...
+    df_ribo = df_ribo.cast({"data": pl.List(pl.Int32), "indices": pl.List(pl.Int32)})
+    # get in-ORF reads and properties that cannot be retrieved using polars API
+    csr_f = (
+        lambda x: csr_matrix((x["data"], x["indices"], x["indptr"]), shape=x["shape"])
+        .sum(axis=0)
+        .tolist()[0]
+    )
+    df_ribo = df_ribo.with_columns(
+        pl.struct(*csr_cols)
+        .map_elements(
+            csr_f,
+            return_dtype=pl.List(pl.Int32),
+        )
+        .alias("reads")
+    )
+    # get ribo properties supported by polars API
+    df_ribo = df_ribo.with_columns(
+        reads_ORF=(pl.col("reads").list.slice(pl.col("TIS_idx"), pl.col("ORF_len"))),
+        reads_in_transcript=pl.col("data").list.sum(),
+    ).with_columns(
+        reads_in_ORF=pl.col("reads_ORF").list.sum(),
+        reads_in_frame_frac=(
+            pl.col("reads_ORF")
+            .list.gather_every(3)
+            .list.sum()
+            .truediv(pl.col("reads_ORF").list.sum())
+        ),
+        reads_5UTR=(pl.col("reads").list.slice(0, pl.col("TIS_idx")).list.sum()),
+        reads_3UTR=(
+            pl.when(pl.col("TTS_idx") != -1)
+            .then(pl.col("reads").list.slice(pl.col("TTS_idx")).list.sum())
+            .otherwise(pl.lit(0))
+        ),
+        reads_skew=(
+            pl.col("reads_ORF")
+            .list.slice(offset=pl.col("reads_ORF").list.len().truediv(2))
+            .list.sum()
+            .truediv(pl.col("reads_ORF").list.sum())
+            .sub(0.5)
+            .mul(2)
+        ),
+        reads_coverage_frac=(
+            pl.col("reads_ORF")
+            .list.eval((pl.element() > 0))
+            .list.sum()
+            .truediv(pl.col("reads_ORF").list.len())
+        ),
+        reads_entropy=(
+            pl.col("reads_ORF").map_elements(
+                lambda x: entropy(x, np.full(len(x), 1) / len(x)),
+                return_dtype=pl.Float32,
+            )
+        ),
+    )
+    return df_ribo
+
+
+def parse_CDS_overlap(df, df_CDS):
+    # detect CDS variant information
+    df = df.with_columns(
+        has_CDS_TIS=(pl.col("TIS_coord").is_in(df_CDS["canonical_TIS_coord"])),
+        has_CDS_TTS=(pl.col("LTS_coord").is_in(df_CDS["canonical_LTS_coord"])),
+    )
+    sel_cols = [
+        "ORF_id",
+        "CDS_exon_start",
+        "CDS_exon_end",
+        "ORF_exon_start",
+        "ORF_exon_end",
+    ]
+    var_feats = {
+        "ORF_id": [],
+        "shared_in_frame_CDS_region": [],
+        "shared_in_frame_CDS_frac": [],
+        "ORF_coords_no_CDS": [],
+        "has_CDS_clones": [],
+    }
+    for r in df.iter_rows(named=True):
+        var_feats["ORF_id"].append(r["ORF_id"])
+        df_CDS_row = df_CDS.filter(
+            pl.when(pl.col("strand") == "+")
+            .then(
+                (pl.col("CDS_start_range") < r["ORF_exon_end"][-1])
+                & (pl.col("CDS_end_range") > r["ORF_exon_start"][0])
+            )
+            .otherwise(
+                (pl.col("CDS_start_range") < r["ORF_exon_end"][0])
+                & (pl.col("CDS_end_range") > r["ORF_exon_start"][-1])
+            )
+        )
+        if len(df_CDS_row) > 0:
+            df_CDS_row = df_CDS_row.with_columns(
+                ORF_id=pl.lit(r["ORF_id"]),
+                ORF_exon_start=pl.lit(r["ORF_exon_start"]),
+                ORF_exon_end=pl.lit(r["ORF_exon_end"]),
+                ORF_exon_len=pl.lit(r["ORF_exon_len"]),
+            )
+            has_CDS_clones = (
+                (df_CDS_row["CDS_exon_start"] == df_CDS_row["ORF_exon_start"])
+                & (df_CDS_row["CDS_exon_end"] == df_CDS_row["ORF_exon_end"])
+            ).any()
+            # ORF start is within CDS exon boundaries
+            cond_1 = (pl.col("ORF_exon_start") >= pl.col("CDS_exon_start")) & (
+                pl.col("ORF_exon_start") < pl.col("CDS_exon_end")
+            )
+            # ORF end is within CDS exon boundaries
+            cond_2 = (pl.col("ORF_exon_end") > pl.col("CDS_exon_start")) & (
+                pl.col("ORF_exon_end") <= pl.col("CDS_exon_end")
+            )
+            cond_3 = (
+                pl.when(pl.col("strand") == "+")
+                .then((pl.col("ORF_exon_start") - pl.col("CDS_exon_start")) % 3 == 0)
+                .otherwise((pl.col("ORF_exon_end") - pl.col("CDS_exon_end")) % 3 == 0)
+            )
+            # filter specific exon regions if they're not overlapping with CDS exon regions
+            df_CDS_exons = (
+                df_CDS_row.explode(["CDS_exon_start", "CDS_exon_end"])
+                .explode(["ORF_exon_start", "ORF_exon_end", "ORF_exon_len"])
+                .with_columns(shared_in_frame_CDS_region=(cond_1 | cond_2) & cond_3)
+                .filter(pl.col("shared_in_frame_CDS_region"))
+            )
+            out = eval_overlap(*[df_CDS_exons[c] for c in sel_cols])
+            in_frame_CDSs = (
+                df_CDS_exons.group_by("transcript_id")
+                .agg(pl.col("shared_in_frame_CDS_region").any())
+                .select("transcript_id")
+                .to_series()
+                .to_list()
+            )
+        else:
+            has_CDS_clones = False
+            out = [0, []]
+            in_frame_CDSs = []
+        var_feats["has_CDS_clones"].append(has_CDS_clones)
+        var_feats["shared_in_frame_CDS_frac"].append(out[0])
+        var_feats["ORF_coords_no_CDS"].append(out[1])
+        var_feats["shared_in_frame_CDS_region"].append(in_frame_CDSs)
+    df_var_feats = pl.DataFrame(
+        var_feats,
+        schema={
+            "ORF_id": pl.String,
+            "shared_in_frame_CDS_region": pl.List(pl.String),
+            "shared_in_frame_CDS_frac": pl.Int64,
+            "ORF_coords_no_CDS": pl.List(pl.Int64),
+            "has_CDS_clones": pl.Boolean,
+        },
+    )
+    df = df.join(df_var_feats, on="ORF_id")
+
+    return df
+
+
 def construct_output_table(
     h5_path,
     out_prefix,
@@ -87,6 +270,7 @@ def construct_output_table(
     parallel=False,
     unfiltered=False,
 ):
+    filter_suffix = ".unfiltered" if unfiltered else ""
     f = h5py.File(h5_path, "r")
     f_tr_ids = np.array(f["transcript/transcript_id"])
     f_headers = pl.Series(f["transcript"].keys())
@@ -96,7 +280,6 @@ def construct_output_table(
         .filter(~pl.Series(f_headers).is_in(STANDARD_HEADERS))
         .to_list()
     )
-
     has_tis_transformer_score = "tis_transformer_score" in f_headers
     has_ribo_output = ribo is not None
     assert has_tis_transformer_score or has_ribo_output, "no model predictions found"
@@ -146,7 +329,7 @@ def construct_output_table(
     ).sort("h5_idx")
     # filter transcripts with zero predictions
     tr_mask = df["TIS_idx"].list.len() > 0
-    assert tr_mask.any(), f"!-> No predictions higher than {prob_cutoff}"
+    # assert tr_mask.any(), f"!-> No predictions higher than {prob_cutoff}"
     df = df.filter(tr_mask)
     df = df.with_columns(
         [
@@ -355,91 +538,20 @@ def construct_output_table(
     df = df.join(df_tmp.drop(sel_cols[1:]), on="ORF_id", how="left")
     if has_ribo_output:
         print(f"{time()}: Parsing ribo-seq information...")
-        df_ribo = df.select("ORF_id", "h5_idx", "TIS_idx", "TTS_idx", "ORF_len")
-        # multiple sets in case of merged data sets
-        ribo_subsets = np.array(ribo_id.decode().split("&"))
-        ribo_paths = [
-            [
-                f"{h5_path.split('.h5')[0]}_{subset}.h5",
-                f"transcript/riboseq/{subset}/5/",
-            ]
-            for subset in ribo_subsets
-        ]
-        # only data and indices of sparse object are required (all counts are summed over read lengths)
-        for h in ["data", "indices", "indptr", "shape"]:
-            if parallel:
-                counts = np.add.reduce(
-                    [
-                        np.array(h5py.File(a)[f"{p}/{h}"])[df_ribo["h5_idx"]]
-                        for a, p in ribo_paths
-                    ]
-                )
-            else:
-                counts = np.add.reduce(
-                    [np.array(f[f"{p}/{h}"])[df_ribo["h5_idx"]] for _, p in ribo_paths]
-                )
-            df_ribo = df_ribo.with_columns(
-                pl.Series(name=h, values=list(counts), dtype=pl.List(pl.Int64)),
-            )
-        # get in-ORF reads and properties that cannot be retrieved using polars API
-        csr_cols = ["data", "indices", "indptr", "shape"]
-        csr_f = (
-            lambda x: csr_matrix(
-                (x["data"], x["indices"], x["indptr"]), shape=x["shape"]
-            )
-            .sum(axis=0)
-            .tolist()[0]
-        )
-        df_ribo = df_ribo.with_columns(
-            pl.struct(*csr_cols)
-            .map_elements(
-                csr_f,
-                return_dtype=pl.List(pl.Int32),
-            )
-            .alias("reads")
-        )
-        # get ribo properties supported by polars API
-        df_ribo = df_ribo.with_columns(
-            reads_ORF=(
-                pl.col("reads").list.slice(pl.col("TIS_idx"), pl.col("ORF_len"))
-            ),
-            reads_in_transcript=pl.col("data").list.sum(),
-        ).with_columns(
-            reads_in_ORF=pl.col("reads_ORF").list.sum(),
-            reads_in_frame_frac=(
-                pl.col("reads_ORF")
-                .list.gather_every(3)
-                .list.sum()
-                .truediv(pl.col("reads_ORF").list.sum())
-            ),
-            reads_5UTR=(pl.col("reads").list.slice(0, pl.col("TIS_idx")).list.sum()),
-            reads_3UTR=(
-                pl.when(pl.col("TTS_idx") != -1)
-                .then(pl.col("reads").list.slice(pl.col("TTS_idx")).list.sum())
-                .otherwise(pl.lit(0))
-            ),
-            reads_skew=(
-                pl.col("reads_ORF")
-                .list.slice(offset=pl.col("reads_ORF").list.len().truediv(2))
-                .list.sum()
-                .truediv(pl.col("reads_ORF").list.sum())
-                .sub(0.5)
-                .mul(2)
-            ),
-            reads_coverage_frac=(
-                pl.col("reads_ORF")
-                .list.eval((pl.element() > 0))
-                .list.sum()
-                .truediv(pl.col("reads_ORF").list.len())
-            ),
-            reads_entropy=(
-                pl.col("reads_ORF").map_elements(
-                    lambda x: entropy(x, np.full(len(x), 1) / len(x)),
-                    return_dtype=pl.Float32,
-                )
-            ),
-        )
-        df = df.join(df_ribo[:, [0, *range(11, 19)]], on="ORF_id", how="left")
+        df_ribo = parse_ribo_data(df, f, h5_path, ribo_id, parallel)
+        if len(df_ribo) > 0:
+            df = df.join(df_ribo[:, [0, *range(11, 19)]], on="ORF_id", how="left")
+        else:
+            if len(df) > 0:
+                print(f"!-> No ribosome reads present amongst input samples.")
+            df = df.join(df_ribo[:, [0]], on="ORF_id", how="inner")
+    # stop early if df is empty
+    if len(df) == 0:
+        out_dicts = {n: pl.Series(n, []) for n in out_headers}
+        df_out = pl.DataFrame(out_dicts).rename(RENAME_HEADERS)
+        df_out.write_csv(f"{out_prefix}{filter_suffix}.csv")
+        print(f"!-> The positive set is empty!")
+        return df_out
     # detect ORF biotypes, evaluate whether transcript biotype is given
     print(f"{time()}: Parsing ORF type information...")
     if "transcript_biotype" in df.columns:
@@ -482,16 +594,19 @@ def construct_output_table(
         )
     )
     print(f"{time()}: Detecting CDS variants...")
-    out_cols = ["ORF_id", "ORF_coords", "ORF_exons"]
+    out_cols = ["ORF_coords", "ORF_exons"]
+    out_types = [pl.List(pl.Int64), pl.List(pl.Int64)]
+    out_dict = pl.Struct({f"column_{i}": j for i, j in enumerate(out_types)})
     df = (
-        df.join(
-            (
-                df.select("ORF_id", "TIS_coord", "LTS_coord", "strand", "exon_coords")
-                .map_rows(lambda x: (x[0], *transcript_region_to_exons(*x[1:])))
-                .rename({f"column_{i}": n for i, n in enumerate(out_cols)})
-            ),
-            on="ORF_id",
+        df.with_columns(
+            pl.struct(["TIS_coord", "LTS_coord", "strand", "exon_coords"])
+            .map_elements(
+                lambda x: transcript_region_to_exons(*x),
+                return_dtype=out_dict,
+            )
+            .struct.unnest()
         )
+        .rename({f"column_{i}": n for i, n in enumerate(out_cols)})
         .with_columns(
             ORF_exon_start=pl.col("ORF_coords").list.gather_every(2, 0),
             ORF_exon_end=pl.col("ORF_coords").list.gather_every(2, 1),
@@ -540,110 +655,16 @@ def construct_output_table(
     )
     # close h5 db handle
     f.file.close()
-    # To evaluate CDS variants, filter df and df_CDS by seqname (to prevent OOM)
+    # To evaluate CDS variants, group df and df_CDS by seqname (to prevent OOM)
     df_grps = []
-    for seqname, df_grp in tqdm(
-        df.group_by("seqname"), total=df["seqname"].unique().len(), desc="seqname"
-    ):
+    total = df["seqname"].unique().len()
+    for seqname, df_grp in tqdm(df.group_by("seqname"), total=total, desc="seqname"):
         df_CDS_grp = df_CDS.filter(pl.col("seqname") == seqname[0])
-        # detect CDS variant information
-        df_grp = df_grp.with_columns(
-            has_CDS_TIS=(pl.col("TIS_coord").is_in(df_CDS_grp["canonical_TIS_coord"])),
-            has_CDS_TTS=(pl.col("LTS_coord").is_in(df_CDS_grp["canonical_LTS_coord"])),
-        )
-        sel_cols = [
-            "ORF_id",
-            "CDS_exon_start",
-            "CDS_exon_end",
-            "ORF_exon_start",
-            "ORF_exon_end",
-        ]
-        var_feats = {
-            "ORF_id": [],
-            "shared_in_frame_CDS_region": [],
-            "shared_in_frame_CDS_frac": [],
-            "ORF_coords_no_CDS": [],
-            "has_CDS_clones": [],
-        }
-        for r in df_grp.iter_rows(named=True):
-            var_feats["ORF_id"].append(r["ORF_id"])
-            df_CDS_row = df_CDS_grp.filter(
-                pl.when(pl.col("strand") == "+")
-                .then(
-                    (pl.col("CDS_start_range") < r["ORF_exon_end"][-1])
-                    & (pl.col("CDS_end_range") > r["ORF_exon_start"][0])
-                )
-                .otherwise(
-                    (pl.col("CDS_start_range") < r["ORF_exon_end"][0])
-                    & (pl.col("CDS_end_range") > r["ORF_exon_start"][-1])
-                )
-            )
-            if len(df_CDS_row) > 0:
-                df_CDS_row = df_CDS_row.with_columns(
-                    ORF_id=pl.lit(r["ORF_id"]),
-                    ORF_exon_start=pl.lit(r["ORF_exon_start"]),
-                    ORF_exon_end=pl.lit(r["ORF_exon_end"]),
-                    ORF_exon_len=pl.lit(r["ORF_exon_len"]),
-                )
-                has_CDS_clones = (
-                    (df_CDS_row["CDS_exon_start"] == df_CDS_row["ORF_exon_start"])
-                    & (df_CDS_row["CDS_exon_end"] == df_CDS_row["ORF_exon_end"])
-                ).any()
-                # ORF start is within CDS exon boundaries
-                cond_1 = (pl.col("ORF_exon_start") >= pl.col("CDS_exon_start")) & (
-                    pl.col("ORF_exon_start") < pl.col("CDS_exon_end")
-                )
-                # ORF end is within CDS exon boundaries
-                cond_2 = (pl.col("ORF_exon_end") > pl.col("CDS_exon_start")) & (
-                    pl.col("ORF_exon_end") <= pl.col("CDS_exon_end")
-                )
-                cond_3 = (
-                    pl.when(pl.col("strand") == "+")
-                    .then(
-                        (pl.col("ORF_exon_start") - pl.col("CDS_exon_start")) % 3 == 0
-                    )
-                    .otherwise(
-                        (pl.col("ORF_exon_end") - pl.col("CDS_exon_end")) % 3 == 0
-                    )
-                )
-                # filter specific exon regions if they're not overlapping with CDS exon regions
-                df_CDS_exons = (
-                    df_CDS_row.explode(["CDS_exon_start", "CDS_exon_end"])
-                    .explode(["ORF_exon_start", "ORF_exon_end", "ORF_exon_len"])
-                    .with_columns(shared_in_frame_CDS_region=(cond_1 | cond_2) & cond_3)
-                    .filter(pl.col("shared_in_frame_CDS_region"))
-                )
-                out = eval_overlap(*[df_CDS_exons[c] for c in sel_cols])
-                in_frame_CDSs = (
-                    df_CDS_exons.group_by("transcript_id")
-                    .agg(pl.col("shared_in_frame_CDS_region").any())
-                    .select("transcript_id")
-                    .to_series()
-                    .to_list()
-                )
-            else:
-                has_CDS_clones = False
-                out = [0, []]
-                in_frame_CDSs = []
-            var_feats["has_CDS_clones"].append(has_CDS_clones)
-            var_feats["shared_in_frame_CDS_frac"].append(out[0])
-            var_feats["ORF_coords_no_CDS"].append(out[1])
-            var_feats["shared_in_frame_CDS_region"].append(in_frame_CDSs)
-        df_var_feats = pl.DataFrame(
-            var_feats,
-            schema={
-                "ORF_id": pl.String,
-                "shared_in_frame_CDS_region": pl.List(pl.String),
-                "shared_in_frame_CDS_frac": pl.Int64,
-                "ORF_coords_no_CDS": pl.List(pl.Int64),
-                "has_CDS_clones": pl.Boolean,
-            },
-        )
-        df_grp = df_grp.join(df_var_feats, on="ORF_id")
+        df_grp = parse_CDS_overlap(df_grp, df_CDS_grp)
         df_grps.append(df_grp)
-    df = pl.concat(df_grps).with_columns(
-        pl.col("shared_in_frame_CDS_frac").truediv(pl.col("ORF_len"))
-    )
+
+    df = pl.concat(df_grps)
+    df = df.with_columns(pl.col("shared_in_frame_CDS_frac").truediv(pl.col("ORF_len")))
     # Filter CDS variants and custom filters
     conds_xtr = [
         pl.col("TTS_on_transcript") if exclude_invalid_TTS else pl.lit(True),
@@ -673,6 +694,7 @@ def construct_output_table(
         c_bio = pl.col("transcript_biotype") == "protein_coding"
     else:
         c_bio = pl.lit(False)
+
     if not unfiltered:
         filter_suffix = ""
         df_filts = []
@@ -690,7 +712,6 @@ def construct_output_table(
             df_filts.append(df_filt)
         df_out = pl.concat(df_filts)
     else:
-        filter_suffix = ".unfiltered"
         df_out = df
     df_out = (
         df_out.with_columns(
@@ -824,8 +845,9 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
                 TTS, stop_codon_stop, strand, exon_coord
             )
         else:
-            stop_parts, stop_exons = np.empty(start_parts.shape), np.empty(
-                start_exons.shape
+            stop_parts, stop_exons = (
+                np.empty(np.shape(start_parts)),
+                np.empty(np.shape(start_exons)),
             )
         cds_parts, cds_exons = transcript_region_to_exons(TIS, LTS, strand, exon_coord)
         tr_coord = np.array([exon_coord[0], exon_coord[-1]])
