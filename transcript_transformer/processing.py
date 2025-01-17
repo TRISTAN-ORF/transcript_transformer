@@ -596,17 +596,18 @@ def construct_output_table(
     print(f"{time()}: Detecting CDS variants...")
     out_cols = ["ORF_coords", "ORF_exons"]
     out_types = [pl.List(pl.Int64), pl.List(pl.Int64)]
-    out_dict = pl.Struct({f"column_{i}": j for i, j in enumerate(out_types)})
+    attrs = ["TIS_coord", "LTS_coord", "strand", "exon_coords"]
     df = (
         df.with_columns(
-            pl.struct(["TIS_coord", "LTS_coord", "strand", "exon_coords"])
+            pl.struct(set(attrs))
             .map_elements(
-                lambda x: transcript_region_to_exons(*x),
-                return_dtype=out_dict,
+                lambda x: dict(
+                    zip(out_cols, transcript_region_to_exons(*[x[a] for a in attrs]))
+                ),
+                return_dtype=pl.Struct(dict(zip(out_cols, out_types))),
             )
             .struct.unnest()
         )
-        .rename({f"column_{i}": n for i, n in enumerate(out_cols)})
         .with_columns(
             ORF_exon_start=pl.col("ORF_coords").list.gather_every(2, 0),
             ORF_exon_end=pl.col("ORF_coords").list.gather_every(2, 1),
