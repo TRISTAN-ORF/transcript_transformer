@@ -156,7 +156,7 @@ def process_ribo_data(
             # Create a Dataset from the Table
             ds = dataset(table)
             # Lazyframe
-            lf = pl.scan_pyarrow_dataset(dataset)
+            lf = pl.scan_pyarrow_dataset(ds)
 
         else:
             raise TypeError(f"file extension {file_ext} not supported")
