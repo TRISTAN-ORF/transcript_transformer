@@ -10,14 +10,15 @@ from scipy import sparse
 from tqdm import tqdm
 import biobear as bb
 import polars as pl
-import pyarrow as pa
+from pyarrow.dataset import dataset
+from pyarrow import Table
 
 import h5py
 import h5max
 import pyfaidx
 from gtfparse import read_gtf
 from .util_functions import vec2DNA, construct_prot, time, slice_gen, prot2vec
-from pdb import set_trace
+
 
 REQ_HEADERS = [
     "seqname",
@@ -151,9 +152,9 @@ def process_ribo_data(
             ctx.sql(s)
             exe = ctx.sql("SELECT reference, start, sequence FROM test")
             # Convert the list of RecordBatches to a Table
-            table = pa.Table.from_batches(exe.to_arrow_record_batch_reader())
+            table = Table.from_batches(exe.to_arrow_record_batch_reader())
             # Create a Dataset from the Table
-            dataset = pa.dataset.dataset(table)
+            ds = dataset(table)
             # Lazyframe
             lf = pl.scan_pyarrow_dataset(dataset)
 
