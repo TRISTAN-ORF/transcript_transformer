@@ -150,14 +150,8 @@ def process_ribo_data(
             s = f"CREATE EXTERNAL TABLE test STORED AS BAM LOCATION '{path}'"
             ctx = bb.connect()
             ctx.sql(s)
-            exe = ctx.sql("SELECT reference, start, sequence FROM test")
-            # Convert the list of RecordBatches to a Table
-            table = Table.from_batches(exe.to_arrow_record_batch_reader())
-            # Create a Dataset from the Table
-            ds = dataset(table)
-            # Lazyframe
-            lf = pl.scan_pyarrow_dataset(ds)
-
+            s_2 = "SELECT reference, start, sequence FROM test"
+            lf = ctx.sql(s_2).to_polars(lazy=True)
         else:
             raise TypeError(f"file extension {file_ext} not supported")
         new_columns = ["transcript_id", "pos", "read"]
