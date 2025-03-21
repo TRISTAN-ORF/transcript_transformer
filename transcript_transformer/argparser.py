@@ -499,7 +499,25 @@ class Parser(argparse.ArgumentParser):
         # ribo takes precedence over ribo_paths
         if args.use_ribo:
             if (args.samples is not None) and (len(args.samples) > 0):
-                args.ribo_ids = [r if type(r) == list else [r] for r in args.samples]
+                if isinstance(args.samples, list):
+                    args.ribo_ids = [r if type(r) == list else [r] for r in args.samples]
+                elif isinstance(args.samples, dict):
+                    args.ribo_study_ids=[]
+                    args.ribo_ids=[]
+                    for key, value in args.samples.items():
+                        #in case where args.sample is given as a dict makes sure 
+                        assert (
+                            isinstance(value, str) or 
+                            (isinstance(value, list) and all(isinstance(x, str) for x in value))
+                        ), (
+                            "Sample when given a study id should be a string or file id or list of str of file id, "
+                            "recheck your yaml to make sure it fits the documentation"
+                        )
+                        args.ribo_study_ids.append(key)
+                        if isinstance(value, str):
+                            args.ribo_ids.append([value])
+                        else:
+                            args.ribo_ids.append(value)
             else:
                 args.ribo_ids = [[r] for r in args.ribo_paths.keys()]
             flat_ids = sum(args.ribo_ids, [])
