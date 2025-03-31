@@ -71,6 +71,8 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
 def process_ribo_data(
     h5_path, ribo_paths, overwrite=False, parallel=False, low_memory=False
 ):
+    # TODO implement option to run custom read lens
+    read_lims = [20, 41]
     f = h5py.File(h5_path, "r")
     tr_ids = (
         pl.from_numpy(np.array(f["transcript/transcript_id"])).to_series().cast(pl.Utf8)
@@ -95,30 +97,7 @@ def process_ribo_data(
     f.close()
     for experiment, path in ribo_to_parse.items():
         print(f"Loading in {experiment}...")
-        _, file_ext = os.path.splitext(path)
-        if file_ext == ".sam":
-            schema = {"column_3": pl.Utf8, "column_4": pl.Int32, "column_10": pl.Utf8}
-            lf = pl.scan_csv(
-                path,
-                has_header=False,
-                comment_prefix="@",
-                schema_overrides=schema,
-                separator="\t",
-            ).select(["column_3", "column_4", "column_10"])
-        elif file_ext == ".bam":
-            s = f"CREATE EXTERNAL TABLE test STORED AS BAM LOCATION '{path}'"
-            ctx = bb.connect()
-            ctx.sql(s)
-            s_2 = "SELECT reference, start, sequence FROM test"
-            lf = ctx.sql(s_2).to_polars(lazy=True)
-        else:
-            raise TypeError(f"file extension {file_ext} not supported")
-        new_columns = ["transcript_id", "pos", "read"]
-        columns = lf.collect_schema().names()
-        lf = lf.rename({o: n for o, n in zip(columns, new_columns)})
-        # TODO implement option to run custom read lens
-        read_lens = np.arange(20, 41)
-        riboseq_data = parse_ribo_reads(lf, read_lens, tr_ids, tr_lens)
+        riboseq_data = parse_ribo_reads(path, read_lims, tr_ids, tr_lens)
         try:
             print("Saving data...")
             if not parallel:
@@ -135,7 +114,7 @@ def process_ribo_data(
             h5max.store_sparse(exp_grp, riboseq_data, format="csr")
             num_reads = [s.sum() for s in riboseq_data]
             exp_grp.create_dataset("num_reads", data=np.array(num_reads).astype(int))
-            exp_grp.create_dataset("metadata", data=read_lens)
+            exp_grp.create_dataset("metadata", data=read_lims)
             f.close()
         except Exception as error:
             print(error)
@@ -333,38 +312,132 @@ def parse_transcriptome(gtf_path, fa_path):
     return db
 
 
-def parse_ribo_reads(lf, read_lens, f_ids, f_lens):
-    num_read_lens = len(read_lens)
-    tr_len_dict = {i: l for i, l in zip(f_ids, f_lens)}
-    read_len_dict = {read_len: i for i, read_len in enumerate(read_lens)}
+def aggregate_sam_file(path, read_lims):
+    schema = {"column_3": pl.Utf8, "column_4": pl.Int32, "column_10": pl.Utf8}
+    columns = ["column_3", "column_4", "column_10"]
+    # Scan complete file in memory
+    lf = pl.scan_csv(
+        path,
+        has_header=False,
+        comment_prefix="@",
+        schema_overrides=schema,
+        separator="\t",
+    ).select(columns)
+    new_columns = ["transcript_id", "pos", "read"]
+    lf = lf.rename({o: n for o, n in zip(columns, new_columns)})
     print("Filtering on read lens...")
+    print(read_lims)
     lf = lf.with_columns(pl.col("read").str.len_chars().alias("read_len"))
-    lf = lf.filter(pl.col("read_len").is_in(list(read_lens)))
-    id_lib = lf.select("transcript_id").unique().collect()
-    mask_f = f_ids.is_in(id_lib)
-
-    print("Constructing empty datasets...")
-    riboseq_data = {
-        tr_id: sparse.csr_matrix((num_read_lens, w), dtype=np.int32)
-        for tr_id, w in zip(f_ids.filter(~mask_f), f_lens.filter(~mask_f))
-    }
-    tr_mask = id_lib["transcript_id"].is_in(f_ids)
-    assert tr_mask.all(), (
-        "Transcript IDs exist within mapped reads which"
-        " are not present in the h5 database. Please apply an identical assembly"
-        " for both setting up this database and mapping the ribosome reads."
+    lf = lf.filter(
+        (pl.col("read_len") >= read_lims[0]) & (pl.col("read_len") < read_lims[1])
     )
     print("Aggregating reads...")
     lf = lf.group_by("transcript_id", "read_len", "pos").agg(pl.col("read").len())
     lf = lf.group_by("transcript_id").agg(
         pl.col("read_len"), pl.col("pos"), pl.col("read")
     )
+    df = lf.collect(streaming=True)
 
-    lf = lf.collect()
-    for row in tqdm(lf.iter_rows(), total=len(lf)):
-        tr_reads = np.zeros((num_read_lens, tr_len_dict[row[0]]), dtype=np.int32)
-        for read_len, pos, num_reads in zip(row[1], row[2], row[3]):
-            tr_reads[read_len_dict[read_len], pos - 1] = num_reads
-        riboseq_data[row[0]] = sparse.csr_matrix(tr_reads, dtype=np.int32)
+    return df
+
+
+def aggregate_bam_file_iterative(path, read_lims, f_ids):
+    """TOO SLOW"""
+    # Use biobear to load data
+    s = f"CREATE EXTERNAL TABLE test STORED AS INDEXED_BAM LOCATION '{path}'"
+    ctx = bb.connect()
+    ctx.sql(s)
+    dataframes = []
+    for f_id in tqdm(f_ids, total=len(f_ids)):
+        s_2 = f"""
+        SELECT start, sequence
+        FROM test
+        WHERE bam_region_filter('{f_id}', reference)
+        """
+        df = ctx.sql(s_2).to_polars()
+        df = df.rename({"start": "pos", "sequence": "read"})
+        df = df.with_columns(pl.col("read").str.len_chars().alias("read_len"))
+        df = df.filter(
+            (pl.col("read_len") >= read_lims[0]) & (pl.col("read_len") < read_lims[1])
+        )
+        df = df.group_by("read_len", "pos").agg(pl.col("read").len())
+
+        # Add the f_id to the DataFrame
+        df = df.with_columns(pl.lit(f_id).alias("f_id"))
+
+        # Append the processed DataFrame to the list
+        dataframes.append(df)
+
+    df = pl.concat(dataframes, how="diagonal")
+
+    return df
+
+
+def aggregate_bam_file(path, read_lims):
+    # Use biobear to load data
+    s = f"CREATE EXTERNAL TABLE test STORED AS BAM LOCATION '{path}'"
+    ctx = bb.connect()
+    ctx.sql(s)
+    s_2 = f"""
+    SELECT reference, start, sequence
+    FROM test
+    """
+    lf = ctx.sql(s_2).to_polars(lazy=True)
+    print("Filtering on read lens...")
+    lf = lf.with_columns(pl.col("read").str.len_chars().alias("read_len"))
+    lf = lf.filter(
+        (pl.col("read_len") >= read_lims[0]) & (pl.col("read_len") < read_lims[1])
+    )
+    print("Aggregating reads...")
+    lf = lf.group_by("transcript_id", "read_len", "pos").agg(pl.col("read").len())
+    lf = lf.group_by("transcript_id").agg(
+        pl.col("read_len"), pl.col("pos"), pl.col("read")
+    )
+    df = lf.collect(streaming=True)
+
+    return df
+
+
+def parse_ribo_reads(path, read_lims, f_ids, f_lens):
+    print("Reading in file...")
+    _, file_ext = os.path.splitext(path)
+    if file_ext == ".sam":
+        df = aggregate_sam_file(path, read_lims)
+    elif file_ext == ".bam":
+        df = aggregate_bam_file(path, read_lims)
+    else:
+        raise TypeError(f"file extension {file_ext} not supported")
+
+    num_read_lens = read_lims[1] - read_lims[0]
+    tr_len_dict = {i: l for i, l in zip(f_ids, f_lens)}
+    read_len_dict = {
+        read_len: i for i, read_len in enumerate(range(read_lims[0], read_lims[1]))
+    }
+    # check transcript ids with no reads
+    id_lib = df.get_column("transcript_id")
+    mask_f = f_ids.is_in(id_lib)
+    print("Constructing empty datasets...")
+    riboseq_data = {
+        tr_id: sparse.csr_matrix((num_read_lens, w), dtype=np.int32)
+        for tr_id, w in zip(f_ids.filter(~mask_f), f_lens.filter(~mask_f))
+    }
+    tr_mask = id_lib.is_in(f_ids)
+    assert tr_mask.all(), (
+        "Transcript IDs exist within mapped reads which"
+        " are not present in the h5 database. Please apply an identical assembly"
+        " for both setting up this database and mapping the ribosome reads."
+    )
+    print("Assigning reads to database...")
+    for row in tqdm(df.iter_rows(), total=len(df)):
+        tr_id = row[0]
+        read_lens = row[1]
+        pos = row[2]
+        num_reads = row[3]
+
+        tr_reads = np.zeros((num_read_lens, tr_len_dict[tr_id]), dtype=np.int32)
+        for read_len, p, num_read in zip(read_lens, pos, num_reads):
+            tr_reads[read_len_dict[read_len], p - 1] = num_read
+
+        riboseq_data[tr_id] = sparse.csr_matrix(tr_reads, dtype=np.int32)
 
     return np.array([riboseq_data[id] for id in f_ids])
