@@ -105,6 +105,17 @@ DNA_IDX_DICT = {
 IDX_PROT_DICT = {v: k for k, v in PROT_IDX_DICT.items()}
 IDX_DNA_DICT = {v: k for k, v in DNA_IDX_DICT.items()}
 
+REQ_HEADERS = [
+    "seqname",
+    "feature",
+    "start",
+    "end",
+    "strand",
+    "gene_id",
+    "transcript_id",
+    "exon_number",
+]
+
 STANDARD_HEADERS = [
     "CDS_coords",
     "CDS_idxs",
@@ -127,6 +138,38 @@ STANDARD_HEADERS = [
     "strand",
     "transcript_id",
     "transcript_len",
+]
+
+CUSTOM_HEADERS = [
+    "transcript_id",
+    "seq",
+    "tis",
+    "canonical_TIS_exon",
+    "exon_idxs",
+    "exon_coords",
+    "CDS_idxs",
+    "CDS_coords",
+    "has_annotated_start_codon",
+    "has_annotated_stop_codon",
+    "canonical_TIS_idx",
+    "canonical_TIS_coord",
+    "canonical_TTS_idx",
+    "canonical_TTS_coord",
+    "canonical_LTS_idx",
+    "canonical_LTS_coord",
+    "transcript_len",
+    "canonical_protein_seq",
+]
+
+DROPPED_HEADERS = [
+    "end",
+    "exon_id",
+    "exon_version",
+    "exon_number",
+    "feature",
+    "frame",
+    "score",
+    "start",
 ]
 
 RENAME_HEADERS = {

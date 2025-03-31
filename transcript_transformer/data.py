@@ -18,48 +18,7 @@ import h5max
 import pyfaidx
 from gtfparse import read_gtf
 from .util_functions import vec2DNA, construct_prot, time, slice_gen, prot2vec
-
-
-REQ_HEADERS = [
-    "seqname",
-    "feature",
-    "start",
-    "end",
-    "strand",
-    "gene_id",
-    "transcript_id",
-    "exon_number",
-]
-CUSTOM_HEADERS = [
-    "transcript_id",
-    "seq",
-    "tis",
-    "canonical_TIS_exon",
-    "exon_idxs",
-    "exon_coords",
-    "CDS_idxs",
-    "CDS_coords",
-    "has_annotated_start_codon",
-    "has_annotated_stop_codon",
-    "canonical_TIS_idx",
-    "canonical_TIS_coord",
-    "canonical_TTS_idx",
-    "canonical_TTS_coord",
-    "canonical_LTS_idx",
-    "canonical_LTS_coord",
-    "transcript_len",
-    "canonical_protein_seq",
-]
-DROPPED_HEADERS = [
-    "end",
-    "exon_id",
-    "exon_version",
-    "exon_number",
-    "feature",
-    "frame",
-    "score",
-    "start",
-]
+from transcript_transformer import REQ_HEADERS, CUSTOM_HEADERS, DROPPED_HEADERS
 
 
 def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
@@ -155,8 +114,8 @@ def process_ribo_data(
         else:
             raise TypeError(f"file extension {file_ext} not supported")
         new_columns = ["transcript_id", "pos", "read"]
-        lf = lf.rename({o: n for o, n in zip(lf.columns, new_columns)})
-
+        columns = lf.collect_schema().names()
+        lf = lf.rename({o: n for o, n in zip(columns, new_columns)})
         # TODO implement option to run custom read lens
         read_lens = np.arange(20, 41)
         riboseq_data = parse_ribo_reads(lf, read_lens, tr_ids, tr_lens)
