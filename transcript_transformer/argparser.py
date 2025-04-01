@@ -332,8 +332,8 @@ class Parser(argparse.ArgumentParser):
             "--folds",
             type=json.loads,
             default=None,
-            help="only for --pretrain. Recommended to leave empty to automatically detect folds of equal size. "\
-            "Dictionary containing the seqnames/contigs for the training, validation and test." \
+            help="only for --pretrain. Recommended to leave empty to automatically detect folds of equal size. "
+            "Dictionary containing the seqnames/contigs for the training, validation and test.",
         )
         tr_parse.add_argument(
             "--log_dir",
@@ -483,7 +483,9 @@ class Parser(argparse.ArgumentParser):
         args.model_dir = model_dir
         # create output dir if non-existent
         if args.out_prefix:
-            os.makedirs(os.path.dirname(os.path.abspath(args.out_prefix)), exist_ok=True)
+            os.makedirs(
+                os.path.dirname(os.path.abspath(args.out_prefix)), exist_ok=True
+            )
         # backward compatibility
         if "seq" in args:
             args.use_seq = args.seq
@@ -500,15 +502,17 @@ class Parser(argparse.ArgumentParser):
         if args.use_ribo:
             if (args.samples is not None) and (len(args.samples) > 0):
                 if isinstance(args.samples, list):
-                    args.ribo_ids = [r if type(r) == list else [r] for r in args.samples]
+                    args.ribo_ids = [
+                        r if type(r) == list else [r] for r in args.samples
+                    ]
                 elif isinstance(args.samples, dict):
-                    args.ribo_study_ids=[]
-                    args.ribo_ids=[]
+                    args.ribo_study_ids = []
+                    args.ribo_ids = []
                     for key, value in args.samples.items():
-                        #in case where args.sample is given as a dict makes sure 
-                        assert (
-                            isinstance(value, str) or 
-                            (isinstance(value, list) and all(isinstance(x, str) for x in value))
+                        # in case where args.sample is given as a dict makes sure
+                        assert isinstance(value, str) or (
+                            isinstance(value, list)
+                            and all(isinstance(x, str) for x in value)
                         ), (
                             "Sample when given a study id should be a string or file id or list of str of file id, "
                             "recheck your yaml to make sure it fits the documentation"
@@ -520,18 +524,21 @@ class Parser(argparse.ArgumentParser):
                             args.ribo_ids.append(value)
             else:
                 args.ribo_ids = [[r] for r in args.ribo_paths.keys()]
+
             flat_ids = sum(args.ribo_ids, [])
-            args.ribo_paths = {k:v for k,v in args.ribo_paths.items() if k in flat_ids}
+            # no "&" allowed in ribo_ids
+            print(flat_ids)
+            assert all(
+                ["&" not in id for id in flat_ids]
+            ), "No & character allowed in sample IDs..."
+            args.ribo_paths = {
+                k: v for k, v in args.ribo_paths.items() if k in flat_ids
+            }
             assert len(np.unique(flat_ids)) == len(
                 flat_ids
             ), "ribo_id is used multiple times"
         else:
             args.ribo_ids = []
-
-        # no "&" allowed in ribo_ids
-        assert all(
-            ["&" not in id for id in np.array(args.ribo_ids).ravel()]
-        ), "No & character allowed in sample IDs..."
 
         # conditions used to remove transcripts from training/validation data
         conds = {"global": {}, "grouped": [{} for l in range(len(args.ribo_ids))]}

@@ -28,19 +28,21 @@ h5_path : path/to/hdf5_file.h5
 ########################################################
 ## A custom set of riboseq data selected for training.
 ## Use ids applied in ribo_paths, leave commented if NA.
-## Replicates can be merged where the number of mapped
-## reads are summed for multiple experiments.
+## Samples (e.g. replicates) can be merged where the number
+## of mapped reads are summed for multiple experiments.
 ########################################################
 ## example: only use SRR000001 and SRR000003
-#ribo:
+#samples:
 #  - SRR000001
 #  - SRR000003
 #
 ## example: SRR000001 and SRR000002 are merged (replicates)
-#ribo:
-#  - - SRR000001
+#samples:
+#  group1:
+#    - SRR000001
 #    - SRR000002
-#  - - SRR000003
+#  group2: 
+#    - SRR000003
 #
 ########################################################
 ## It is possible to set offsets per read length.
