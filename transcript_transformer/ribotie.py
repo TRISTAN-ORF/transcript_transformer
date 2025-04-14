@@ -128,7 +128,6 @@ def main():
             args.parallel,
             args.low_memory,
         )
-
     # Pre-training
     if args.pretrain and (not args.data):
         args.transfer_checkpoint = None
@@ -137,8 +136,8 @@ def main():
             f"--> Pretraining model: Combining all samples in one training, validation and test set"
         )
         f = h5py.File(args.h5_path, "r")["transcript"]
-        contigs = np.array(f["contig"])
-        tr_lens = np.array(f["tr_len"])
+        contigs = np.array(f["seqname"])
+        tr_lens = np.array(f["transcript_len"])
         f.file.close()
         contig_set = np.unique(contigs)
         if args.folds == None:
@@ -148,11 +147,13 @@ def main():
                 mask = contigs == contig
                 contig_lens[contig] = sum(tr_lens[mask])
             args.folds = define_folds(contig_lens, test=0.5, val=0.2)
-
+            print(args.folds)
         if not args.results:
             for i, fold in args.folds.items():
                 args_set = deepcopy(args)
+                # update args.train, args.val, and args.test
                 args_set.__dict__.update(fold)
+                # set output path
                 args_set.out_prefix = args.out_prefix + f"pretrain_f{i}"
                 trainer, model = train(
                     args_set, test_model=False, enable_model_summary=False
@@ -160,8 +161,8 @@ def main():
                 predict(args_set, trainer=trainer, model=model, postprocess=False)
                 # saving model
                 ckpt_path = os.path.join(trainer.logger.log_dir, "checkpoints")
-                ckpt_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[0])
-                os.replace(ckpt_path, f"{args_set.out_prefix}.ckpt")
+                weights_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[0])
+                os.replace(weights_path, f"{args_set.out_prefix}.ckpt")
                 args.folds[i]["transfer_checkpoint"] = f"{args_set.out_prefix}.ckpt"
             args.folds[0]["test"] = []
 
@@ -183,46 +184,38 @@ def main():
                 (impresources.files(ribotie_models) / "50perc_06_23.yml"), args
             )
             args.model_dir = str(impresources.files(ribotie_models)._paths[0])
-        for i, ribo_set in enumerate(args.ribo_ids):
+        for group, ribo_ids in args.grouped_ribo_ids.items():
+            # alter configurations per group of samples
             args_set = deepcopy(args)
-            args_set.ribo_ids = [ribo_set]
-            args_set.cond["grouped"] = [args.cond["grouped"][i]]
-            if (args.ribo_study_ids is not None):
-                ribo_set_str = args.ribo_study_ids[i]
-            else:
-                ribo_set_str = "&".join(ribo_set)
+            args_set.grouped_ribo_ids = {group: ribo_ids}
+            args_set.cond["grouped"] = {group: args.cond["grouped"][group]}
             for j, fold in args_set.pretrained_model["folds"].items():
                 args_set.__dict__.update(fold)
                 args_set.transfer_checkpoint = os.path.join(
                     args.model_dir, args_set.transfer_checkpoint
                 )
                 print(f"--> Loading model: {args_set.transfer_checkpoint}...")
-                print(f"--> Finetuning model for {ribo_set_str}...")
+                print(f"--> Finetuning model for {group}...")
                 trainer, model = train(
                     args_set, test_model=False, enable_model_summary=False
                 )
-                print(f"--> Predicting samples for {ribo_set_str}...")
-                args_set.out_prefix = f"{args.out_prefix}{ribo_set_str}_f{j}"
+                print(f"--> Predicting samples for {group}...")
+                # set output path
+                args_set.out_prefix = f"{args.out_prefix}{group}_f{j}"
                 predict(args_set, trainer=trainer, model=model, postprocess=False)
-            #idk why this line is duplicated after fold training but I modified both as to not break things
-            if (args.ribo_study_ids is not None):
-                ribo_set_str = args.ribo_study_ids[i]
-            else:
-                ribo_set_str = "&".join(ribo_set)
-            prefix = f"{args.out_prefix}{ribo_set_str}"
+            prefix = f"{args.out_prefix}{group}"
             merge_outputs(prefix, args.pretrained_model["folds"].keys())
 
     if not args.data:
         if args.pretrain:
-            args.ribo_ids = [[f"pretrain_f{i}"] for i, fold in args.folds.items()]
-        for ribo_set in args.ribo_ids:
-            if (args.ribo_study_ids is not None):
-                ribo_set_str = args.ribo_study_ids[i]
-            else:
-                ribo_set_str = "&".join(ribo_set)
-            out = np.load(f"{args.out_prefix}{ribo_set_str}.npy", allow_pickle=True)
-            out_prefix = f"{args.out_prefix}{ribo_set_str}"
-            df = construct_output_table(
+            output_sets = [f"pretrain_f{i}" for i, fold in args.folds.items()]
+        else:
+            output_sets = [str(k) for k in args.grouped_ribo_ids.keys()]
+
+        for output in output_sets:
+            out = np.load(f"{args.out_prefix}{output}.npy", allow_pickle=True)
+            out_prefix = f"{args.out_prefix}{output}"
+            df, df_filt = construct_output_table(
                 h5_path=args.h5_path,
                 out_prefix=out_prefix,
                 prob_cutoff=args.prob_cutoff,
@@ -232,22 +225,22 @@ def main():
                 min_ORF_len=args.min_ORF_len,
                 remove_duplicates=not args.keep_duplicates,
                 exclude_invalid_TTS=not args.include_invalid_TTS,
-                ribo=out,
+                ribo_output=out,
+                grouped_ribo_ids=args.grouped_ribo_ids,
                 parallel=args.parallel,
-                unfiltered=args.unfiltered,
             )
             if df is not None:
-                csv_to_gtf(args.h5_path, df, out_prefix, args.exclude_annotated)
-                os.makedirs(
-                    os.path.join(os.path.dirname(args.out_prefix), "multiqc"),
-                    exist_ok=True,
-                )
-                create_multiqc_reports(
-                    df,
-                    os.path.join(
-                        os.path.dirname(args.out_prefix), "multiqc", ribo_set_str
-                    ),
-                )
+                ids = ["ribotie_all", "ribotie"]
+                names = ["RiboTIE_unfiltered", "RiboTIE"]
+                multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
+                paths = [out_prefix + ".unfiltered", out_prefix]
+                os.makedirs(multiqc_path, exist_ok=True)
+                for df, id, name, path in zip([df, df_filt], ids, names, paths):
+                    csv_to_gtf(args.h5_path, df, path, args.exclude_annotated)
+                    out = os.path.join(multiqc_path, os.path.basename(path))
+                    create_multiqc_reports(df, out, id, name)
+            else:
+                print("No positive predictions found")
 
 
 def merge_outputs(prefix, keys):

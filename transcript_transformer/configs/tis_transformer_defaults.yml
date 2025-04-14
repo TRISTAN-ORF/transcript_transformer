@@ -1,3 +1,7 @@
+exp_path : transcript
+y_path : tis
+seqn_path : seqname
+id_path : transcript_id
 num_tokens: 8
 dim: 48
 depth: 8
@@ -16,5 +20,3 @@ emb_dropout: 0.1
 ff_dropout: 0.1
 attn_dropout: 0.1
 local_window_size: 256
-cond:
-    has_annotated_start_codon: "x"

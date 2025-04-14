@@ -43,7 +43,16 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
             )
         f.close()
     else:
-        db = parse_transcriptome(gtf_path, fa_path)
+        print("--> Loading assembly data...")
+        DNA_seq = pyfaidx.Fasta(fa_path)
+        gtf = read_gtf(gtf_path, result_type="polars")
+        # use biobear instead (does not work well)
+        # session = bb.connect()
+        # gtf = session.sql(f"SELECT * FROM gtf_scan('{gtf_path}')").to_polars()
+        # import exon number as int (strings have wrong sortin (e.g. 10, 11, 2,...))
+        gtf = gtf.with_columns(pl.col("exon_number").cast(pl.Int32, strict=False))
+        db_tr = parse_transcriptome(gtf, DNA_seq)
+        db_gtf = parse_genome(gtf)
         no_handle = True
         max_wait = 900
         waited = 0
@@ -57,7 +66,8 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
                     waited += 120
         if not no_handle:
             try:
-                f = save_transcriptome_to_h5(f, db)
+                f = save_transcriptome_to_h5(f, db_tr)
+                f = save_genome_to_h5(f, db_gtf)
                 f.close()
                 if backup and (not pulled):
                     shutil.copy(h5_path, backup_path)
@@ -79,38 +89,41 @@ def process_ribo_data(
     )
     tr_lens = pl.from_numpy(np.array(f["transcript/transcript_len"])).to_series()
     ribo_to_parse = deepcopy(ribo_paths)
-    for experiment, path in ribo_paths.items():
+    samples = {}
+    for group_samples in ribo_paths.values():
+        samples.update(group_samples)
+    for sample_id, path in samples.items():
         cond_1 = (
             parallel
             and (not overwrite)
-            and (os.path.isfile(h5_path.split(".h5")[0] + f"_{experiment}.h5"))
+            and (os.path.isfile(h5_path.split(".h5")[0] + f"_{sample_id}.h5"))
         )
         cond_2 = not (parallel or overwrite) and (
-            f"transcript/riboseq/{experiment}" in f.keys()
+            f"transcript/riboseq/{sample_id}" in f.keys()
         )
         if cond_1 or cond_2:
             print(
-                f"--> {experiment} in h5, omitting..."
+                f"--> {sample_id} in h5, omitting..."
                 "(use --overwrite for overwriting existing riboseq data)"
             )
-            ribo_to_parse.pop(experiment)
+            ribo_to_parse.pop(sample_id)
     f.close()
-    for experiment, path in ribo_to_parse.items():
-        print(f"Loading in {experiment}...")
+    for sample_id, path in samples.items():
+        print(f"Loading in {sample_id}...")
         riboseq_data = parse_ribo_reads(path, read_lims, tr_ids, tr_lens)
         try:
             print("Saving data...")
             if not parallel:
                 f = h5py.File(h5_path, "a")
             else:
-                f = h5py.File(h5_path.split(".h5")[0] + f"_{experiment}.h5", "w")
+                f = h5py.File(h5_path.split(".h5")[0] + f"_{sample_id}.h5", "w")
                 f.create_group("transcript")
             if "riboseq" not in f["transcript"].keys():
                 f["transcript"].create_group("riboseq")
-            if experiment in f["transcript/riboseq"].keys():
-                del f[f"transcript/riboseq/{experiment}"]
-            f["transcript/riboseq"].create_group(experiment)
-            exp_grp = f[f"transcript/riboseq/{experiment}"].create_group("5")
+            if sample_id in f["transcript/riboseq"].keys():
+                del f[f"transcript/riboseq/{sample_id}"]
+            f["transcript/riboseq"].create_group(sample_id)
+            exp_grp = f[f"transcript/riboseq/{sample_id}"].create_group("5")
             h5max.store_sparse(exp_grp, riboseq_data, format="csr")
             num_reads = [s.sum() for s in riboseq_data]
             exp_grp.create_dataset("num_reads", data=np.array(num_reads).astype(int))
@@ -118,11 +131,30 @@ def process_ribo_data(
             f.close()
         except Exception as error:
             print(error)
-            del f[f"transcript/riboseq/{experiment}"]
+            del f[f"transcript/riboseq/{sample_id}"]
+
+
+def save_genome_to_h5(f, db):
+    print("Save gene data in hdf5 files...")
+    grp = f.create_group("gene")
+    for key in db.columns:
+        if db[key].dtype == pl.Categorical:
+            db = db.with_columns(pl.col(key).cast(pl.String))
+        if db[key].dtype == pl.String:
+            array = [a if a != None else "" for a in db[key]]
+            max_char_len = db[key].str.len_chars().max()
+            if max_char_len > 0:
+                grp.create_dataset(key, data=array, dtype=f"<S{max_char_len}")
+            else:
+                continue
+        else:
+            grp.create_dataset(key, data=db[key])
+
+    return f
 
 
 def save_transcriptome_to_h5(f, db):
-    print("Save data in hdf5 files...")
+    print("Save transcript data in hdf5 files...")
     dt8 = h5py.vlen_dtype(np.dtype("int8"))
     dt = h5py.vlen_dtype(np.dtype("int"))
     grp = f.create_group("transcript")
@@ -146,17 +178,25 @@ def save_transcriptome_to_h5(f, db):
     return f
 
 
-def parse_transcriptome(gtf_path, fa_path):
-    print("--> Loading assembly data...")
-    genome = pyfaidx.Fasta(fa_path)
-    contig_list = pl.Series(genome.keys())
-    gtf = read_gtf(gtf_path, result_type="polars")
-    # use biobear instead
-    # session = bb.connect()
-    # gtf = session.sql(f"SELECT * FROM gtf_scan('{gtf_path}')").to_polars()
+def parse_genome(gtf):
+    gene_gtf = gtf.filter(pl.col("feature") == "gene")
+    cols_to_drop = ["score", "frame"]
+    for col in gene_gtf.columns[8:]:
+        if gene_gtf.schema[col] == pl.Float64:
+            if gene_gtf[col].null_count() == gene_gtf.height or all(
+                gene_gtf[col].is_nan()
+            ):
+                cols_to_drop.append(col)
+        else:
+            if gene_gtf[col].null_count() == gene_gtf.height:
+                cols_to_drop.append(col)
 
-    # import exon number as int (strings have wrong sortin (e.g. 10, 11, 2,...))
-    gtf = gtf.with_columns(pl.col("exon_number").cast(pl.Int32, strict=False))
+    gene_gtf = gene_gtf.drop(cols_to_drop)
+
+    return gene_gtf
+
+
+def parse_transcriptome(gtf, DNA_seq):
     # ensure all required fields are listed
     assert np.isin(
         REQ_HEADERS, gtf.columns
@@ -215,7 +255,7 @@ def parse_transcriptome(gtf_path, fa_path):
         for exon_i, exon in enumerate(ftrs["exon"].iter_rows(named=True)):
             # get sequence
             exon_seq = slice_gen(
-                genome[exon["seqname"]],
+                DNA_seq[exon["seqname"]],
                 exon["start"],
                 exon["end"],
                 exon["strand"],
@@ -326,7 +366,6 @@ def aggregate_sam_file(path, read_lims):
     new_columns = ["transcript_id", "pos", "read"]
     lf = lf.rename({o: n for o, n in zip(columns, new_columns)})
     print("Filtering on read lens...")
-    print(read_lims)
     lf = lf.with_columns(pl.col("read").str.len_chars().alias("read_len"))
     lf = lf.filter(
         (pl.col("read_len") >= read_lims[0]) & (pl.col("read_len") < read_lims[1])

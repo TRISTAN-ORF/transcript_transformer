@@ -228,13 +228,13 @@ RIBO_OUT_HEADERS = [
 
 
 RIBOTIE_MQC_HEADER = """
-# parent_id: 'ribotie'
-# parent_name: "RiboTIE"
+# parent_id: {id}
+# parent_name: {name}
 # parent_description: "Overview of open reading frames called as translating by RiboTIE"
 # """
 
 START_CODON_MQC_HEADER = """
-# id: 'ribotie_start_codon_counts' 
+# id: 'ribotie_start_codon_counts_{id}' 
 # section_name: 'Start Codon'
 # description: "Start codon counts of all open reading frames called by RiboTIE"
 # plot_type: 'bargraph'
@@ -249,7 +249,7 @@ START_CODON_MQC_HEADER = """
 """
 
 BIOTYPE_VARIANT_MQC_HEADER = """
-# id: 'ribotie_biotype_counts_variant'
+# id: 'ribotie_biotype_counts_variant_{id}'
 # section_name: 'Transcript Biotypes (varRNA-ORF)'
 # description: "Transcript biotypes of varRNA-ORFs called by RiboTIE"
 # plot_type: 'bargraph'
@@ -262,7 +262,7 @@ BIOTYPE_VARIANT_MQC_HEADER = """
 """
 
 ORF_TYPE_MQC_HEADER = """
-# id: 'ribotie_orftype_counts'
+# id: 'ribotie_orftype_counts_{id}'
 # section_name: 'ORF types'
 # description: "ORF types of all open reading frames called by RiboTIE"
 # plot_type: 'bargraph'
@@ -275,7 +275,7 @@ ORF_TYPE_MQC_HEADER = """
 """
 
 ORF_LEN_MQC_HEADER = """
-# id: 'ribotie_orflen_hist'
+# id: 'ribotie_orflen_hist_{id}'
 # section_name: 'ORF lengths'
 # description: "ORF lengths of all open reading frames called by RiboTIE"
 # plot_type: 'linegraph'

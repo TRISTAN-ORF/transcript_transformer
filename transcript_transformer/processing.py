@@ -73,31 +73,43 @@ def eval_overlap(ORF_id, CDS_exon_start, CDS_exon_end, ORF_exon_start, ORF_exon_
     return overlap, non_CDS_coords
 
 
-def parse_ribo_data(df, f, h5_path, ribo_id, parallel):
+def parse_ribo_data(df, f, h5_path, ribo_ids, parallel):
     df_ribo = df.select("ORF_id", "h5_idx", "TIS_idx", "TTS_idx", "ORF_len")
     # multiple sets in case of merged data sets
-    ribo_subsets = np.array(ribo_id.decode().split("&"))
+    sys_path = f"{h5_path.split('.h5')[0]}_{{sample}}.h5"
+    db_path = "transcript/riboseq/{sample}/5/"
     ribo_paths = [
-        [
-            f"{h5_path.split('.h5')[0]}_{subset}.h5",
-            f"transcript/riboseq/{subset}/5/",
-        ]
-        for subset in ribo_subsets
+        [sys_path.format(sample=sample), db_path.format(sample=sample)]
+        for sample in ribo_ids
     ]
     # only data and indices of sparse object are required (all counts are summed over read lengths)
     csr_cols = ["data", "indices", "indptr", "shape"]
     for h in csr_cols:
         if parallel:
-            counts = np.add.reduce(
-                [
-                    np.array(h5py.File(a)[f"{p}/{h}"])[df_ribo["h5_idx"]]
-                    for a, p in ribo_paths
-                ]
-            )
+            count_matrix = [
+                np.array(h5py.File(a)[f"{p}/{h}"])[df_ribo["h5_idx"]]
+                for a, p in ribo_paths
+            ]
         else:
-            counts = np.add.reduce(
-                [np.array(f[f"{p}/{h}"])[df_ribo["h5_idx"]] for _, p in ribo_paths]
-            )
+            count_matrix = [
+                np.array(f[f"{p}/{h}"])[df_ribo["h5_idx"]] for _, p in ribo_paths
+            ]
+        if h in ["data", "indices"]:
+            # concatenate the individual entries by keeping transcript position and value
+            exp_iter = range(len(count_matrix))
+            tr_iter = range(len(count_matrix[0]))
+            counts = [
+                np.concatenate([count_matrix[i][j] for i in exp_iter]) for j in tr_iter
+            ]
+            total_reads = [len(c) for c in counts]
+        elif h == "indptr":
+            # row values are not important (read length info is discarded), replace last value
+            # of indptr with total reads (normally indicating all reads are in the last row)
+            counts = count_matrix[0]
+            counts[:, -1] = total_reads
+        else:
+            # shape is the same for all samples, just take the first one
+            counts = count_matrix[0]
         df_ribo = df_ribo.with_columns(
             pl.Series(name=h, values=list(counts), dtype=pl.List(pl.Int32))
         )
@@ -121,15 +133,15 @@ def parse_ribo_data(df, f, h5_path, ribo_id, parallel):
     )
     # get ribo properties supported by polars API
     df_ribo = df_ribo.with_columns(
-        reads_ORF=(pl.col("reads").list.slice(pl.col("TIS_idx"), pl.col("ORF_len"))),
+        reads_in_ORF=(pl.col("reads").list.slice(pl.col("TIS_idx"), pl.col("ORF_len"))),
         reads_in_transcript=pl.col("data").list.sum(),
     ).with_columns(
-        reads_in_ORF=pl.col("reads_ORF").list.sum(),
+        reads_in_ORF=pl.col("reads_in_ORF").list.sum(),
         reads_in_frame_frac=(
-            pl.col("reads_ORF")
+            pl.col("reads_in_ORF")
             .list.gather_every(3)
             .list.sum()
-            .truediv(pl.col("reads_ORF").list.sum())
+            .truediv(pl.col("reads_in_ORF").list.sum())
         ),
         reads_5UTR=(pl.col("reads").list.slice(0, pl.col("TIS_idx")).list.sum()),
         reads_3UTR=(
@@ -138,27 +150,27 @@ def parse_ribo_data(df, f, h5_path, ribo_id, parallel):
             .otherwise(pl.lit(0))
         ),
         reads_skew=(
-            pl.col("reads_ORF")
-            .list.slice(offset=pl.col("reads_ORF").list.len().truediv(2))
+            pl.col("reads_in_ORF")
+            .list.slice(offset=pl.col("reads_in_ORF").list.len().truediv(2))
             .list.sum()
-            .truediv(pl.col("reads_ORF").list.sum())
+            .truediv(pl.col("reads_in_ORF").list.sum())
             .sub(0.5)
             .mul(2)
         ),
         reads_coverage_frac=(
-            pl.col("reads_ORF")
+            pl.col("reads_in_ORF")
             .list.eval((pl.element() > 0))
             .list.sum()
-            .truediv(pl.col("reads_ORF").list.len())
+            .truediv(pl.col("reads_in_ORF").list.len())
         ),
         reads_entropy=(
-            pl.col("reads_ORF").map_elements(
+            pl.col("reads_in_ORF").map_elements(
                 lambda x: entropy(x, np.full(len(x), 1) / len(x)),
                 return_dtype=pl.Float32,
             )
         ),
     )
-    return df_ribo
+    return df_ribo.fill_nan(0)
 
 
 def parse_CDS_overlap(df, df_CDS):
@@ -266,11 +278,10 @@ def construct_output_table(
     min_ORF_len=15,
     remove_duplicates=True,
     exclude_invalid_TTS=True,
-    ribo=None,
+    ribo_output=None,
+    grouped_ribo_ids={},
     parallel=False,
-    unfiltered=False,
 ):
-    filter_suffix = ".unfiltered" if unfiltered else ""
     f = h5py.File(h5_path, "r")
     f_tr_ids = np.array(f["transcript/transcript_id"])
     f_headers = pl.Series(f["transcript"].keys())
@@ -281,17 +292,18 @@ def construct_output_table(
         .to_list()
     )
     has_tis_transformer_score = "tis_transformer_score" in f_headers
-    has_ribo_output = ribo is not None
+    has_ribo_output = ribo_output is not None
     assert has_tis_transformer_score or has_ribo_output, "no model predictions found"
     print(f"--> Processing {out_prefix}...")
 
     if has_ribo_output:
+        assert grouped_ribo_ids is not {}, "No grouped_ribo_id dictionary provided"
         prefix = "ribotie_"
         tool_headers = ["ribotie_score", "ribotie_rank"]
-        tr_ids = np.array([o[0].split(b"|")[1] for o in ribo])
-        ribo_id = ribo[0][0].split(b"|")[0]
+        tr_ids = np.array([o[0].split(b"|")[1] for o in ribo_output])
+        group = ribo_output[0][0].split(b"|")[0].decode()
         pred_to_h5_args = get_str2str_idx_map(tr_ids, f_tr_ids)
-        preds = [o[1] for o in ribo]
+        preds = [o[1] for o in ribo_output]
         df = pl.DataFrame(
             {
                 "transcript_id": tr_ids,
@@ -538,9 +550,9 @@ def construct_output_table(
     df = df.join(df_tmp.drop(sel_cols[1:]), on="ORF_id", how="left")
     if has_ribo_output:
         print(f"{time()}: Parsing ribo-seq information...")
-        df_ribo = parse_ribo_data(df, f, h5_path, ribo_id, parallel)
+        df_ribo = parse_ribo_data(df, f, h5_path, grouped_ribo_ids[group], parallel)
         if len(df_ribo) > 0:
-            df = df.join(df_ribo[:, [0, *range(11, 19)]], on="ORF_id", how="left")
+            df = df.join(df_ribo[:, [0, *range(10, 18)]], on="ORF_id", how="inner")
         else:
             if len(df) > 0:
                 print(f"!-> No ribosome reads present amongst input samples.")
@@ -549,9 +561,10 @@ def construct_output_table(
     if len(df) == 0:
         out_dicts = {n: pl.Series(n, []) for n in out_headers}
         df_out = pl.DataFrame(out_dicts).rename(RENAME_HEADERS)
-        df_out.write_csv(f"{out_prefix}{filter_suffix}.csv")
+        df_out.write_csv(f"{out_prefix}.unfiltered.csv")
+        df_out.write_csv(f"{out_prefix}.csv")
         print(f"!-> The positive set is empty!")
-        return df_out
+        return df_out, df_out
     # detect ORF biotypes, evaluate whether transcript biotype is given
     print(f"{time()}: Parsing ORF type information...")
     if "transcript_biotype" in df.columns:
@@ -696,37 +709,35 @@ def construct_output_table(
     else:
         c_bio = pl.lit(False)
 
-    if not unfiltered:
-        filter_suffix = ""
-        df_filts = []
-        for _, df_grp in df.group_by("TIS_coord"):
-            df_filt = df_grp.filter(
-                pl.when((c_1 & c_xtr).any())
-                .then(c_1 & c_xtr)
-                .when((c_2 & c_xtr & c_clone).any())
-                .then(c_2 & c_xtr & c_clone)
-                .when((c_3 & c_xtr & c_cds_var).any())
-                .then(c_3 & c_xtr & c_cds_var)
-                .otherwise(c_xtr & c_cds_var)
-                & pl.when((c_1 | c_bio).any()).then(c_1 | c_bio).otherwise(pl.lit(True))
-            )
-            df_filts.append(df_filt)
-        df_out = pl.concat(df_filts)
-    else:
-        df_out = df
-    df_out = (
-        df_out.with_columns(
-            (pl.col(f"{prefix}score").rank(method="ordinal", descending=True)).alias(
-                f"{prefix}rank"
-            )
+    filter_suffix = ""
+    df_filts = []
+    for _, df_grp in df.group_by("TIS_coord"):
+        df_filt = df_grp.filter(
+            pl.when((c_1 & c_xtr).any())
+            .then(c_1 & c_xtr)
+            .when((c_2 & c_xtr & c_clone).any())
+            .then(c_2 & c_xtr & c_clone)
+            .when((c_3 & c_xtr & c_cds_var).any())
+            .then(c_3 & c_xtr & c_cds_var)
+            .otherwise(c_xtr & c_cds_var)
+            & pl.when((c_1 | c_bio).any()).then(c_1 | c_bio).otherwise(pl.lit(True))
         )
-        .select(out_headers)
-        .sort(f"{prefix}rank")
-        .rename(RENAME_HEADERS)
-    )
-    df_out.write_csv(f"{out_prefix}{filter_suffix}.csv")
+        df_filts.append(df_filt)
+    df_filt = pl.concat(df_filts)
+    for df_, label in zip([df, df_filt], [".unfiltered", ""]):
+        df_ = (
+            df_.with_columns(
+                (
+                    pl.col(f"{prefix}score").rank(method="ordinal", descending=True)
+                ).alias(f"{prefix}rank")
+            )
+            .select(out_headers)
+            .sort(f"{prefix}rank")
+            .rename(RENAME_HEADERS)
+        )
+        df_.write_csv(f"{out_prefix}{label}.csv")
 
-    return df_out
+    return df, df_filt
 
 
 def process_seq_preds(ids, preds, seqs, min_prob):
@@ -767,12 +778,13 @@ def process_seq_preds(ids, preds, seqs, min_prob):
     return df
 
 
-def create_multiqc_reports(df, out_prefix):
+def create_multiqc_reports(df, out_prefix, id, name):
     # Start codons
     output = out_prefix + ".start_codons_mqc.tsv"
+    header = RIBOTIE_MQC_HEADER.format(id=id, name=name)
     with open(output, "w") as f:
-        f.write(RIBOTIE_MQC_HEADER)
-        f.write(START_CODON_MQC_HEADER)
+        f.write(header)
+        f.write(START_CODON_MQC_HEADER.format(id=id))
     start_codons = df["start_codon"].value_counts()
     with open(output, mode="a") as f:
         start_codons.write_csv(f, separator="\t", include_header=False)
@@ -781,8 +793,8 @@ def create_multiqc_reports(df, out_prefix):
     if "transcript_biotype" in df.columns:
         output = out_prefix + ".biotypes_variant_mqc.tsv"
         with open(output, "w") as f:
-            f.write(RIBOTIE_MQC_HEADER)
-            f.write(BIOTYPE_VARIANT_MQC_HEADER)
+            f.write(header)
+            f.write(BIOTYPE_VARIANT_MQC_HEADER.format(id=id))
         orf_biotypes = (
             df.filter(pl.col("ORF_type") == "varRNA-ORF")["transcript_biotype"]
             .value_counts()
@@ -794,8 +806,8 @@ def create_multiqc_reports(df, out_prefix):
     # ORF types
     output = out_prefix + ".ORF_types_mqc.tsv"
     with open(output, "w") as f:
-        f.write(RIBOTIE_MQC_HEADER)
-        f.write(ORF_TYPE_MQC_HEADER)
+        f.write(header)
+        f.write(ORF_TYPE_MQC_HEADER.format(id=id))
     orf_types = (
         df["ORF_type"]
         .value_counts()

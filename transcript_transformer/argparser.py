@@ -491,98 +491,96 @@ class Parser(argparse.ArgumentParser):
             args.use_seq = args.seq
         # determine presence of ribo samples
         args.use_ribo = (
-            ("ribo_paths" in args)
-            and (type(args.ribo_paths) == dict)
-            and (len(args.ribo_paths) > 0)
+            "ribo_paths" in args
+            and isinstance(args.ribo_paths, dict)
+            and bool(args.ribo_paths)
         )
         if args.h5_path:
             args.h5_path = f"{args.h5_path.split('.h5')[0].split('.hdf5')[0]}.h5"
 
-        # ribo takes precedence over ribo_paths
         if args.use_ribo:
-            if (args.samples is not None) and (len(args.samples) > 0):
+            # by default, the keys are both the group names and individual sample names (first idx of list)
+            init_paths = {k: [[k, v]] for k, v in args.ribo_paths.items()}
+            # remap ribo_paths based on args.samples
+            if args.samples:
                 if isinstance(args.samples, list):
-                    args.ribo_ids = [
-                        r if type(r) == list else [r] for r in args.samples
-                    ]
+                    # Reduce ribo_paths to only include paths for samples in the provided list
+                    args.ribo_paths = {
+                        sample: init_paths[sample]
+                        for sample in args.samples
+                        if sample in init_paths
+                    }
                 elif isinstance(args.samples, dict):
-                    args.ribo_study_ids = []
-                    args.ribo_ids = []
-                    for key, value in args.samples.items():
-                        # in case where args.sample is given as a dict makes sure
-                        assert isinstance(value, str) or (
-                            isinstance(value, list)
-                            and all(isinstance(x, str) for x in value)
+                    # Group ribo_paths based on the provided sample groups
+                    new_ribo_paths = {}
+                    for group_name, sample_list in args.samples.items():
+                        # Ensure value is either a string or a list of strings
+                        assert isinstance(sample_list, str) or (
+                            isinstance(sample_list, list)
+                            and all(isinstance(x, str) for x in sample_list)
                         ), (
-                            "Sample when given a study id should be a string or file id or list of str of file id, "
+                            "Sample when given a study id should be a string or list of str of file id, "
                             "recheck your yaml to make sure it fits the documentation"
                         )
-                        args.ribo_study_ids.append(key)
-                        if isinstance(value, str):
-                            args.ribo_ids.append([value])
-                        else:
-                            args.ribo_ids.append(value)
+                        new_ribo_paths[group_name] = [
+                            init_paths[sample][0]
+                            for sample in sample_list
+                            if sample in init_paths
+                        ]
+                    args.ribo_paths = new_ribo_paths
+                else:
+                    raise ValueError(
+                        "Invalid format for args.samples. Expected list or dict."
+                    )
             else:
-                args.ribo_ids = [[r] for r in args.ribo_paths.keys()]
-
-            flat_ids = sum(args.ribo_ids, [])
-            # no "&" allowed in ribo_ids
-            print(flat_ids)
-            assert all(
-                ["&" not in id for id in flat_ids]
-            ), "No & character allowed in sample IDs..."
-            args.ribo_paths = {
-                k: v for k, v in args.ribo_paths.items() if k in flat_ids
+                args.ribo_paths = init_paths
+            # Construct {group_id: [sample_id 1 , ..]} dict
+            args.grouped_ribo_ids = {
+                k: [v[0] for v in vs] for k, vs in args.ribo_paths.items()
             }
-            assert len(np.unique(flat_ids)) == len(
-                flat_ids
-            ), "ribo_id is used multiple times"
-        else:
-            args.ribo_ids = []
 
-        # conditions used to remove transcripts from training/validation data
-        conds = {"global": {}, "grouped": [{} for l in range(len(args.ribo_ids))]}
+        # Construct conditions for data filtering
+        conds = {"global": {}}
+        if args.use_ribo:
+            conds["grouped"] = {k: {} for k in args.grouped_ribo_ids.keys()}
         conds["global"]["transcript_len"] = lambda x: np.logical_and(
             x > args.min_seq_len, x < args.max_seq_len
         )
         if args.cond is not None:
+            # Conditions applied to ribo-seq data
             if "ribo" in args.cond.keys() and args.use_ribo:
-                # key is overwritten if condition present for multiple group members
                 for key, item in args.cond["ribo"].items():
-                    if type(item) == dict:
-                        # add condition to listed data sets
+                    # if dictionary, apply conditions to each group of samples
+                    if isinstance(item, dict):
                         for id, cond in item.items():
-                            grp_idx = [
-                                i for i, grp in enumerate(args.ribo_ids) if id in grp
-                            ]
-                            tmp_dict = {f"{key}": lambda x: eval(cond)}
-                            conds["grouped"][grp_idx[0]].update(tmp_dict)
+                            # Update the corresponding condition for each matching group
+                            for group_name, samples in args.ribo_paths.items():
+                                paths = [s[1] for s in samples]
+                                if id in paths:
+                                    tmp_dict = {f"{key}": lambda x: eval(cond)}
+                                    conds["grouped"][group_name].update(tmp_dict)
+                    # otherwise, apply conditions to all samples
                     else:
-                        # add condition to all groups
-                        for grp_idx, grp in enumerate(args.ribo_ids):
+                        # Add the condition to all groups
+                        for group_name in args.ribo_paths.keys():
                             tmp_dict = {f"{key}": lambda x: eval(item)}
-                            conds["grouped"][grp_idx].update(tmp_dict)
+                            conds["grouped"][group_name].update(tmp_dict)
                 del args.cond["ribo"]
+            # Conditions applied to transcript metadata
             for key, item in args.cond.items():
-                if type(item) == dict:
-                    # add condition to listed data sets
+                # ignore if not parsing ribo-seq data
+                if isinstance(item, dict) and args.use_ribo:
                     for id, cond in item.items():
-                        grp_idx = [
-                            i for i, grp in enumerate(args.ribo_ids) if id in grp
-                        ]
-                        tmp_dict = {f"{key}": lambda x: eval(cond)}
-                        conds["grouped"][grp_idx[0]].update(tmp_dict)
+                        # Update the corresponding condition for each matching group
+                        for group_name, samples in args.ribo_paths.items():
+                            paths = [s[1] for s in samples]
+                            if id in paths:
+                                tmp_dict = {f"{key}": lambda x: eval(cond)}
+                                conds["grouped"][group_name].update(tmp_dict)
                 else:
-                    # add global condition
                     tmp_dict = {f"{key}": lambda x: eval(item)}
                     conds["global"].update(tmp_dict)
 
         args.cond = conds
-
-        # Default values
-        args.exp_path = "transcript"
-        args.y_path = "tis"
-        args.seqn_path = "seqname"
-        args.id_path = "transcript_id"
         print(args)
         return args

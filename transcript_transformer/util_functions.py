@@ -28,6 +28,30 @@ def construct_prot(seq):
     return string, has_stop, stop_codon
 
 
+def derive_exon_number():
+    # Parse the transcript ID from the "attribute" column
+    # Adjust the parsing based on the specific formatting within your GTF file
+    # Example assumes something like: 'transcript_id "some_id";'
+    get_transcript_id = pl.col("attribute").str.extract(r'transcript_id "([^"]+)"', 1)
+    exons_df = exons_df.with_columns(transcript_id=get_transcript_id)
+
+    # Group by transcript and strand, then sort and enumerate exon numbers
+    exons_numbered_df = exons_df.sort(["transcript_id", "start"]).with_columns(
+        exon_number=pl.col("transcript_id").cumcount().over(["transcript_id", "strand"])
+    )
+
+    # Depending on strand, adjust the exon number appropriately
+    # The above example increments exon numbers from 0; adjust starting value as needed
+    # `.cumcount()` starts from 0, incrementing for each row in the group. To start from 1, add 1.
+    exons_numbered_df = exons_numbered_df.with_columns(
+        exon_number=pl.when(pl.col("strand") == "+")
+        .then(pl.col("exon_number") + 1)
+        .otherwise(
+            pl.col("exon_number") + 1
+        )  # If you ever need reverse order, adjust logic
+    )
+
+
 def DNA2vec(dna_seq, seq_dict=DNA_IDX_DICT):
     dna_vec = np.zeros(len(dna_seq), dtype=int)
     for idx in np.arange(len(dna_seq)):
@@ -121,7 +145,7 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
         test_chunks = len(seqname_set)
         print(
             f"!-> Not enough seqnames to divide data, increasing test set"
-            f" to {(1/test_chunks):.2f}% of full data"
+            f" to {(1/test_chunks)*100:.1f}% of full data"
         )
     # group seqnames in number of parts that will allow listed test set fraction
     groups = divide_keys_by_size(seqn_size_dict, test_chunks)
@@ -135,7 +159,7 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
             val_chunks = len(tr_val_lens)
             print(
                 f"!-> Not enough seqnames to divide data, increasing val set to"
-                f" {(1/val_chunks):.2f}% of train/val data in fold {fold_i}"
+                f" {(1/val_chunks)*100:.1f}% of train/val data in fold {fold_i}"
             )
         else:
             val_chunks = val_chunks_set
