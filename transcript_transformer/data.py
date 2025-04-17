@@ -10,8 +10,6 @@ from scipy import sparse
 from tqdm import tqdm
 import biobear as bb
 import polars as pl
-from pyarrow.dataset import dataset
-from pyarrow import Table
 
 import h5py
 import h5max
@@ -423,16 +421,17 @@ def aggregate_bam_file(path, read_lims):
     """
     lf = ctx.sql(s_2).to_polars(lazy=True)
     print("Filtering on read lens...")
-    lf = lf.with_columns(pl.col("read").str.len_chars().alias("read_len"))
+    lf = lf.with_columns(pl.col("sequence").str.len_chars().alias("read_len"))
     lf = lf.filter(
         (pl.col("read_len") >= read_lims[0]) & (pl.col("read_len") < read_lims[1])
     )
     print("Aggregating reads...")
-    lf = lf.group_by("transcript_id", "read_len", "pos").agg(pl.col("read").len())
-    lf = lf.group_by("transcript_id").agg(
-        pl.col("read_len"), pl.col("pos"), pl.col("read")
+    lf = lf.group_by("reference", "read_len", "start").agg(pl.col("sequence").len())
+    lf = lf.group_by("reference").agg(
+        pl.col("read_len"), pl.col("start"), pl.col("sequence")
     )
     df = lf.collect(streaming=True)
+    df = df.rename({"reference": "transcript_id", "start": "pos", "sequence": "read"})
 
     return df
 
