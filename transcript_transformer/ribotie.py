@@ -16,7 +16,7 @@ from .util_functions import define_folds
 
 
 def parse_args():
-    parser = Parser(description="Run Ribo-former", stage="train")
+    parser = Parser(description="Run RiboTIE", stage="train")
     data_parser = parser.add_data_args()
     data_parser.add_argument(
         "--prob_cutoff",
@@ -61,7 +61,7 @@ def parse_args():
     data_parser.add_argument(
         "--exclude_annotated",
         action="store_true",
-        help="Include annotated CDS regions in generated GTF file containing predicted translated ORFs.",
+        help="Exclude annotated CDS regions in generated GTF file containing predicted translated ORFs.",
     )
     data_parser.add_argument(
         "--unfiltered",
@@ -232,8 +232,8 @@ def main():
             if df is not None:
                 ids = ["ribotie_all", "ribotie"]
                 names = ["RiboTIE_unfiltered", "RiboTIE"]
-                multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
                 paths = [out_prefix + ".unfiltered", out_prefix]
+                multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
                 os.makedirs(multiqc_path, exist_ok=True)
                 for df, id, name, path in zip([df, df_filt], ids, names, paths):
                     csv_to_gtf(args.h5_path, df, path, args.exclude_annotated)

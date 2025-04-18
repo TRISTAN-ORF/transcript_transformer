@@ -1,5 +1,14 @@
 # Backup stuff
 *.bck
+*.npy
+*.csv
+*.gtf
+*.fa
+*.html
+
+# ignore tests
+models/
+tests/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

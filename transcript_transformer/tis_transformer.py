@@ -9,7 +9,7 @@ from .argparser import Parser
 from .util_functions import define_folds
 from . import configs
 from .data import process_seq_data
-from .processing import construct_output_table
+from .processing import construct_output_table, csv_to_gtf, create_multiqc_reports
 
 
 def parse_args():
@@ -32,6 +32,25 @@ def parse_args():
         action="store_true",
         help="only perform processing of model predictions",
     )
+    data_parser.add_argument(
+        "--val_frac",
+        type=float,
+        default=0.2,
+        help="Determines the fraction of the training set to be used for "
+        "validation. The remaining fraction is used for training.",
+    )
+    data_parser.add_argument(
+        "--test_frac",
+        type=float,
+        default=0.2,
+        help="Determines the fraction of the full set to be used for "
+        "testing. The remaining fraction is used for training/validation.",
+    )
+    data_parser.add_argument(
+        "--exclude_annotated",
+        action="store_true",
+        help="Exclude annotated CDS regions in generated GTF file containing predicted translated ORFs.",
+    )
     parser.add_comp_args()
     parser.add_training_args()
     parser.add_train_loading_args(pretrain=False)
@@ -50,7 +69,6 @@ def parse_args():
     # remove riboformer specific properties
     args.use_seq = True
     args.use_ribo = False
-    args.cond["grouped"] = [{}]
     return args
 
 
@@ -76,21 +94,25 @@ def main():
         for contig in contig_set:
             mask = contigs == contig
             contig_lens[contig] = sum(tr_lens[mask])
-        folds = define_folds(contig_lens, 0.2, 0.2)
+        # assign seqnames to train/val/test set
+        folds = define_folds(contig_lens, args.test_frac, args.val_frac)
         for i, fold in folds.items():
             args.__dict__.update(fold)
             trainer, model = train(args, test_model=False, enable_model_summary=False)
             args.out_prefix = f"{prefix}_f{i}"
             predict(args, trainer=trainer, model=model, postprocess=False)
+
+        # merge all predictions into one file
         merge_outputs(prefix, folds.keys())
 
+        # sort and transfer predictions to h5 file
         f = h5py.File(args.h5_path, "a")
         grp = f["transcript"]
         f_tr_ids = np.array(grp["transcript_id"])
         xsorted = np.argsort(f_tr_ids)
         out = np.load(f"{prefix}.npy", allow_pickle=True)
         tr_ids = np.hstack([o[0] for o in out])
-
+        tr_ids = [s.split(b"|")[1] for s in tr_ids]
         pred_to_h5_args = xsorted[np.searchsorted(f_tr_ids[xsorted], tr_ids)]
         pred_arr = np.empty(shape=(len(f_tr_ids),), dtype=object)
         pred_arr.fill(np.array([], dtype=np.float32))
@@ -117,10 +139,18 @@ def main():
                     print("--> Writing results to backup h5 database...")
                 grp.create_dataset("tis_transformer_score", data=pred_arr, dtype=dtype)
                 f.close()
+
     if not args.data:
-        f = h5py.File(args.h5_path, "r")
-        construct_output_table(args.h5_path, f"{args.out_prefix}_seq", args.prob_cutoff)
-        f.close()
+        df, df_filt = construct_output_table(args.h5_path, prefix, args.prob_cutoff)
+        if df is not None:
+            names = ["TIS Transformer Unfiltered", "TIS Transformer"]
+            paths = [prefix + ".unfiltered", prefix]
+            multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
+            os.makedirs(multiqc_path, exist_ok=True)
+            for df, name, path in zip([df, df_filt], names, paths):
+                csv_to_gtf(args.h5_path, df, path, args.exclude_annotated)
+                out = os.path.join(multiqc_path, os.path.basename(path))
+                create_multiqc_reports(df, out, "tis_transformer", name)
 
 
 def merge_outputs(prefix, keys):

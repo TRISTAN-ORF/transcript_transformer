@@ -5,6 +5,8 @@ from h5max import load_sparse_matrix
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
+from pdb import set_trace
+
 
 def collate_fn(batch):
     """
@@ -304,6 +306,7 @@ class h5pyDataModule(pl.LightningDataModule):
         global_mask = np.logical_and.reduce(global_masks)
         # Masks over the samples applied per group of datasets
         group_masks = {}
+        print(self.cond)
         for group, cond_dict in self.cond["grouped"].items():
             group_mask = [np.full_like(global_mask, True)]
             for key, cond_f in cond_dict.items():
@@ -361,11 +364,17 @@ class h5pyDataModule(pl.LightningDataModule):
         mask_set = []
         len_set = []
         idx_group_order = []
-        for group, cond_mask in group_conds.items():
-            mask_set.append(np.logical_and(cond_mask, mask))
+        if len(group_conds) > 0:
+            for group, cond_mask in group_conds.items():
+                mask_set.append(np.logical_and(cond_mask, mask))
+                len_set.append(self.transcript_lens[mask_set[-1]])
+                # For certainty, I'm not assuming a static order in evaluation of dicts
+                idx_group_order.append(group)
+        else:
+            mask_set.append(mask)
             len_set.append(self.transcript_lens[mask_set[-1]])
-            # For certainty, I'm not assuming a static order in evaluation of dicts
-            idx_group_order.append(group)
+            idx_group_order.append("seq")
+
         mask_all = np.hstack(mask_set)
         lens = np.hstack(len_set)
         idxs = np.where(mask_all)[0]

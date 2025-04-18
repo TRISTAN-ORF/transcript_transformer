@@ -538,11 +538,12 @@ class Parser(argparse.ArgumentParser):
             args.grouped_ribo_ids = {
                 k: [v[0] for v in vs] for k, vs in args.ribo_paths.items()
             }
+        else:
+            args.grouped_ribo_ids = {}
 
         # Construct conditions for data filtering
         conds = {"global": {}}
-        if args.use_ribo:
-            conds["grouped"] = {k: {} for k in args.grouped_ribo_ids.keys()}
+        conds["grouped"] = {k: {} for k in args.grouped_ribo_ids.keys()}
         conds["global"]["transcript_len"] = lambda x: np.logical_and(
             x > args.min_seq_len, x < args.max_seq_len
         )
