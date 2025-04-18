@@ -81,11 +81,11 @@ def process_ribo_data(
 ):
     # TODO implement option to run custom read lens
     read_lims = [20, 41]
-    f = h5py.File(h5_path, "r")
-    tr_ids = (
-        pl.from_numpy(np.array(f["transcript/transcript_id"])).to_series().cast(pl.Utf8)
-    )
-    tr_lens = pl.from_numpy(np.array(f["transcript/transcript_len"])).to_series()
+    # load from hdf5 file
+    with h5py.File(h5_path, "r") as f:
+        tr_ids = pl.Series(np.array(f["transcript/transcript_id"]), dtype=pl.Utf8)
+        tr_lens = pl.from_numpy(np.array(f["transcript/transcript_len"])).to_series()
+        f_keys = f.keys()
     samples = {}
     for group_samples in ribo_paths.values():
         samples.update(group_samples)
@@ -97,7 +97,7 @@ def process_ribo_data(
             and (os.path.isfile(h5_path.split(".h5")[0] + f"_{sample_id}.h5"))
         )
         cond_2 = not (parallel or overwrite) and (
-            f"transcript/riboseq/{sample_id}" in f.keys()
+            f"transcript/riboseq/{sample_id}" in f_keys
         )
         if cond_1 or cond_2:
             print(
