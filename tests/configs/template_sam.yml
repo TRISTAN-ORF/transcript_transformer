@@ -1,0 +1,67 @@
+########################################################
+## assembly and reference files of GENOME.
+########################################################
+gtf_path : data/GRCh38v110_snippet.gtf
+fa_path : data/GRCh38v110_snippet.fa
+########################################################
+## reads mapped to TRANSCRIPTOME (*.bam/*.sam)
+## format: 'id : ribosome profiling paths'
+## DO NOT change id after data is parsed to h5 file
+########################################################
+ribo_paths :
+  sample_1 : data/SRR000001.sam
+  sample_2 : data/SRR000002.sam
+  sample_3 : data/SRR000003.sam
+########################################################
+## path to hdf5 database created to store data.
+########################################################
+h5_path : GRCh38v110_snippet.h5
+########################################################
+## Out prefix for predictions, defaults to hdf5 path
+########################################################
+out_prefix : out/
+#
+####################
+## ADVANCED SETUP ##
+####################
+#
+########################################################
+## A custom set of riboseq data selected for training.
+## Use ids applied in ribo_paths, leave commented if NA.
+## Replicates can be merged where the number of mapped 
+## reads are summed for multiple experiments. 
+########################################################
+## example: only use sample_1 and sample_3
+samples:
+  - sample_1
+  - sample_3
+#
+# example: sample_1 and sample_2 are merged (replicates)
+# samples:
+#    group 1:
+#      - sample_1
+#      - sample_2
+#    group_2:
+#      - sample_3
+# 
+########################################################
+## Training times can be sped up by removing transcripts
+## with few reads from the training step. 
+## This does not affect samples within the test set. 
+## Filtering is performed based on the number of reads 
+## mapped to the transcript.
+########################################################
+## example: ommit transcripts with less than 6 reads during 
+## training/validation
+## this is default and always applied if not altered!
+# cond :
+#   ribo:
+#     num_reads : x > 0
+#
+## example: custom rules per data set
+#cond :
+#  ribo:
+#    num_reads : 
+#      sample_1 : "x > 10"
+#      sample_2 : "x > 0"
+#      sample_3 : "x > 0"
