@@ -86,10 +86,10 @@ def process_ribo_data(
         pl.from_numpy(np.array(f["transcript/transcript_id"])).to_series().cast(pl.Utf8)
     )
     tr_lens = pl.from_numpy(np.array(f["transcript/transcript_len"])).to_series()
-    ribo_to_parse = deepcopy(ribo_paths)
     samples = {}
     for group_samples in ribo_paths.values():
         samples.update(group_samples)
+    samples_to_process = deepcopy(samples)
     for sample_id, path in samples.items():
         cond_1 = (
             parallel
@@ -104,9 +104,8 @@ def process_ribo_data(
                 f"--> {sample_id} in h5, omitting..."
                 "(use --overwrite for overwriting existing riboseq data)"
             )
-            ribo_to_parse.pop(sample_id)
-    f.close()
-    for sample_id, path in samples.items():
+            samples_to_process.pop(sample_id)
+    for sample_id, path in samples_to_process.items():
         print(f"Loading in {sample_id}...")
         riboseq_data = parse_ribo_reads(path, read_lims, tr_ids, tr_lens)
         try:
