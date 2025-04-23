@@ -404,7 +404,6 @@ def aggregate_reads(lf, read_lims):
     lf = lf.filter(
         (pl.col("read_len") >= read_lims[0]) & (pl.col("read_len") < read_lims[1])
     )
-    set_trace()
     print("\t -- Aggregating reads...")
     lf_agg = lf.group_by(["transcript_id", "read_len", "pos"]).agg(
         pl.col("read").count().alias("read_count")
@@ -414,9 +413,6 @@ def aggregate_reads(lf, read_lims):
     )
 
     return lf_final
-
-
-from pdb import set_trace
 
 
 def parse_ribo_reads(path, read_lims, f_ids, f_lens, low_memory=False):
@@ -449,7 +445,6 @@ def parse_ribo_reads(path, read_lims, f_ids, f_lens, low_memory=False):
         " for both setting up this database and mapping the ribosome reads."
     )
     print("\t -- Assigning reads to database...")
-    set_trace()
     df = lf.collect(streaming=True)
     for row in tqdm(df.iter_rows(), total=len(df)):
         tr_id = row[0]
