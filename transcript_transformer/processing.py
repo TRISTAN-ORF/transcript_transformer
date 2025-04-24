@@ -863,7 +863,10 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
                 np.empty(np.shape(start_exons)),
             )
         cds_parts, cds_exons = transcript_region_to_exons(TIS, LTS, strand, exon_coord)
-        tr_coord = np.array([exon_coord[0], exon_coord[-1]])
+        if strand == "+":
+            tr_coord = np.array([exon_coord[0], exon_coord[-1]])
+        else:
+            tr_coord = np.array([exon_coord[-2], exon_coord[1]])
         exons = np.arange(1, len(exon_coord) // 2 + 1)
         coords_packed = np.vstack(
             [

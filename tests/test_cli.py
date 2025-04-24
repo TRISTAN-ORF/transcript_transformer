@@ -131,17 +131,17 @@ def test_ribotie_bam_data_loading():
 def test_ribotie_pretraining():
     files = [
         f"out/pretrain_f{i}.{ext}"
-        for i, ext in list(product(range(1, 3), ["npy", "csv", "gtf"]))
+        for i, ext in list(product(range(2), ["npy", "csv", "gtf"]))
     ] + [
         f"out/pretrain_f{i}.unfiltered.{ext}"
-        for i, ext in list(product(range(1, 3), ["csv", "gtf"]))
+        for i, ext in list(product(range(2), ["csv", "gtf"]))
     ]
 
     remove_if_exists(files)
 
     command = [
         "ribotie",
-        "configs/ribotie_training.yml",
+        "configs/ribotie_pretraining.yml",
     ]
     subprocess.run(command, check=True, text=True, capture_output=True)
 
