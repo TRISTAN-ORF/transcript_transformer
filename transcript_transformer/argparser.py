@@ -91,11 +91,6 @@ class Parser(argparse.ArgumentParser):
             action="store_true",
             help="polars setting that trades perfomance for memory-efficiency. use on low-memory devices.",
         )
-        # input_parse.add_argument(
-        #     "--iterative_loading",
-        #     action="store_true",
-        #     help="polars setting that trades perfomance for memory-efficiency. use on low-memory devices.",
-        # )
         input_parse.add_argument(
             "--cores",
             type=int,
