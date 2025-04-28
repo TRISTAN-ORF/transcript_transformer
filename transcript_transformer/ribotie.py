@@ -155,9 +155,11 @@ def main():
                 args_set.__dict__.update(fold)
                 # set output path
                 args_set.out_prefix = args.out_prefix + f"pretrain_f{i}"
+                # train model
                 trainer, model = train(
                     args_set, test_model=False, enable_model_summary=False
                 )
+                # predict TIS locations
                 predict(args_set, trainer=trainer, model=model, postprocess=False)
                 # saving model
                 ckpt_path = os.path.join(trainer.logger.log_dir, "checkpoints")
@@ -236,7 +238,9 @@ def main():
                 multiqc_path = os.path.join(os.path.dirname(args.out_prefix), "multiqc")
                 os.makedirs(multiqc_path, exist_ok=True)
                 for df, id, name, path in zip([df, df_filt], ids, names, paths):
-                    csv_to_gtf(args.h5_path, df, path, args.exclude_annotated)
+                    csv_to_gtf(
+                        args.h5_path, df, path, "RiboTIE", args.exclude_annotated
+                    )
                     out = os.path.join(multiqc_path, os.path.basename(path))
                     create_multiqc_reports(df, out, id, name)
             else:

@@ -19,10 +19,10 @@ from transcript_transformer import (
     STANDARD_OUT_HEADERS,
     RIBO_OUT_HEADERS,
 )
-
 from .util_functions import (
     construct_prot,
     time,
+    check_genomic_order,
     find_distant_exon_coord,
     transcript_region_to_exons,
     get_str2str_idx_map,
@@ -829,8 +829,8 @@ def create_multiqc_reports(df, out_prefix, id, name):
     return
 
 
-def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
-    """convert RiboTIE result table to GTF"""
+def csv_to_gtf(h5_path, df, out_prefix, caller, exclude_annotated=False):
+    """convert results table to GTF"""
     if exclude_annotated:
         df = df.filter(pl.col("ORF_type") != "annotated CDS")
     df = df.fill_null("NA")
@@ -842,11 +842,18 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
     pred_to_h5_args = xsorted[np.searchsorted(f_ids[xsorted], df["transcript_id"])]
     # obtain exons
     exons_coords = np.array(f["transcript/exon_coords"])[pred_to_h5_args]
+    tr_ids = f_ids[pred_to_h5_args]
     f.close()
     gff_parts = []
-    for TIS, LTS, TTS, strand, exon_coord in zip(
-        df["TIS_coord"], df["LTS_coord"], df["TTS_coord"], df["strand"], exons_coords
+    for TIS, LTS, TTS, strand, exon_coord, tr_id in zip(
+        df["TIS_coord"],
+        df["LTS_coord"],
+        df["TTS_coord"],
+        df["strand"],
+        exons_coords,
+        tr_ids,
     ):
+        check_genomic_order(exon_coord, strand)
         start_codon_stop = find_distant_exon_coord(TIS, 2, strand, exon_coord)
         start_parts, start_exons = transcript_region_to_exons(
             TIS, start_codon_stop, strand, exon_coord
@@ -917,7 +924,7 @@ def csv_to_gtf(h5_path, df, out_prefix, exclude_annotated=False):
                 "\t".join(
                     [
                         row["seqname"],
-                        "RiboTIE",
+                        caller,
                         feature,
                         start,
                         stop,

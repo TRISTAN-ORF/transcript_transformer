@@ -1,3 +1,5 @@
+input_type: hdf5
+use_seq : true
 exp_path : transcript
 y_path : tis
 seqn_path : seqname

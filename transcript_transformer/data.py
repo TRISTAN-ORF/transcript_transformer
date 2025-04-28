@@ -15,7 +15,13 @@ import h5py
 import h5max
 import pyfaidx
 from gtfparse import read_gtf
-from .util_functions import vec2DNA, construct_prot, time, slice_gen, prot2vec
+from .util_functions import (
+    vec2DNA,
+    construct_prot,
+    slice_gen,
+    prot2vec,
+    check_genomic_order,
+)
 from transcript_transformer import REQ_HEADERS, CUSTOM_HEADERS, DROPPED_HEADERS
 
 
@@ -58,21 +64,21 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
             try:
                 f = h5py.File(h5_path, "a")
                 no_handle = False
+                try:
+                    f = save_transcriptome_to_h5(f, db_tr)
+                    if len(db_gtf) > 0:
+                        f = save_genome_to_h5(f, db_gtf)
+                    f.close()
+                    if backup and (not pulled):
+                        shutil.copy(h5_path, backup_path)
+                except Exception as e:
+                    logging.error(traceback.format_exc())
+                    print("Failed to update h5 database, which might be corrupted")
             except Exception as e:
                 if waited < max_wait:
                     time.sleep(120)
                     waited += 120
-        if not no_handle:
-            try:
-                f = save_transcriptome_to_h5(f, db_tr)
-                f = save_genome_to_h5(f, db_gtf)
-                f.close()
-                if backup and (not pulled):
-                    shutil.copy(h5_path, backup_path)
-            except Exception as e:
-                logging.error(traceback.format_exc())
-                print("Failed to update h5 database, which might be corrupted")
-        else:
+        if no_handle:
             print("Could not open h5 database, suspending...")
 
 
@@ -208,7 +214,6 @@ def parse_transcriptome(gtf, DNA_seq):
     ]
     data_dict_keys = np.array(REQ_HEADERS + CUSTOM_HEADERS + list(xtr_cols))
     data_dict = {k: [] for k in CUSTOM_HEADERS}
-    data_cols_in_gtf = data_dict_keys[np.isin(data_dict_keys, gtf.columns)]
 
     print("\t -- Reading in assembly...")
     gtf_set = gtf.filter(
@@ -218,6 +223,7 @@ def parse_transcriptome(gtf, DNA_seq):
             ["transcript", "exon", "CDS", "start_codon", "stop_codon"]
         ),
     ).sort(["seqname", "transcript_id", "exon_number"])
+
     gtf_set = gtf_set.with_columns(
         (abs(pl.col("start") - pl.col("end")) + 1).alias("feature_length")
     )
@@ -226,11 +232,31 @@ def parse_transcriptome(gtf, DNA_seq):
     db = pl.DataFrame(data={"transcript_id": trs})
     db = db.join(gtf.filter(pl.col("feature") == "transcript"), on="transcript_id")
 
+    altered_tr_exons = []
     print("\t -- Importing transcripts and metadata...")
     for tr_id, gtf_tr in tqdm(
         gtf_set.group_by("transcript_id", maintain_order=True), total=len(db)
     ):
         is_pos_strand = (gtf_tr["strand"] == "+").any()
+        # assert start > end
+        assert any(
+            gtf_tr["start"] <= gtf_tr["end"]
+        ), f"Start and end coordinates are not correct for transcript {tr_id}"
+        # Check and fix exon ordering
+        gtf_tmp = gtf_tr.filter(pl.col("feature") == "exon").sort(
+            "start", descending=[not is_pos_strand]
+        )
+        gtf_tmp = gtf_tmp.with_columns(
+            exon_number_alt=pl.Series(np.arange(1, gtf_tmp.height + 1))
+        )
+        if any(gtf_tmp["exon_number"] != gtf_tmp["exon_number_alt"]):
+            exon_dict = dict(
+                gtf_tmp.select(["exon_number", "exon_number_alt"]).iter_rows()
+            )
+            gtf_tr = gtf_tr.with_columns(pl.col("exon_number").replace(exon_dict)).sort(
+                "exon_number"
+            )
+            altered_tr_exons.append(tr_id)
         ftrs = {}
         ftr_cum_lens = {}
         ftr_idxs = {}
@@ -301,12 +327,14 @@ def parse_transcriptome(gtf, DNA_seq):
             data_dict["has_annotated_stop_codon"].append("stop_codon" in ftrs)
             data_dict["has_annotated_start_codon"].append("start_codon" in ftrs)
             data_dict["CDS_idxs"].append(ftr_idxs["CDS"] + exon_shift + in_exon_shift)
-            data_dict["CDS_coords"].append(
+            CDS_coords = (
                 ftrs["CDS"][:, ["start", "end"]]
                 .transpose()
                 .unpivot()["value"]
                 .to_numpy()
             )
+            check_genomic_order(CDS_coords)
+            data_dict["CDS_coords"].append(CDS_coords)
             data_dict["canonical_TIS_exon"].append(exon_i + 1)
             data_dict["canonical_TIS_idx"].append(tis_idx)
             # LTS: Last Translation Site; 1 nucleotide upstream of TTS
@@ -331,11 +359,17 @@ def parse_transcriptome(gtf, DNA_seq):
             data_dict["canonical_LTS_coord"].append(-1)
             data_dict["canonical_protein_seq"].append(None)
         data_dict["exon_idxs"].append(ftr_idxs["exon"])
+        check_genomic_order(exon_coords)
         data_dict["exon_coords"].append(np.array(exon_coords))
         data_dict["seq"].append(seq)
         data_dict["tis"].append(target_seq)
         data_dict["transcript_id"].append(gtf_tr["transcript_id"].unique()[0])
 
+    if len(altered_tr_exons) > 0:
+        print(
+            f"WARNING: Exon numbering for {len(altered_tr_exons)} transcripts was altered. "
+            "Please check the GTF file for correct exon numbering."
+        )
     db_ext = pl.from_dict(data_dict)
     db = db_ext.join(db, on="transcript_id", how="left")
     # drop exon info that is not correct at transcript-level
@@ -350,6 +384,8 @@ def parse_transcriptome(gtf, DNA_seq):
         )
         .cast(pl.List(pl.Int8))
     )
+
+    return db
 
 
 def aggregate_sam_file(path, read_lims, low_memory=False):

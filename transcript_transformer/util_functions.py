@@ -1,3 +1,4 @@
+import sys
 from datetime import datetime
 import numpy as np
 import heapq
@@ -206,8 +207,6 @@ def transcript_region_to_exons(
             E.g. [{start_coord} 2 4 {stop_coord}]
     """
     pos_strand = strand == "+"
-    if type(exons) == list:
-        exons = np.array(exons)
     if stop_coord == -1:
         if pos_strand:
             stop_coord = exons[-1]
@@ -216,27 +215,93 @@ def transcript_region_to_exons(
         else:
             stop_coord = exons[-2]
     if pos_strand:
-        exon_idx_start = np.where(start_coord >= exons)[0][-1] // 2 * 2
-        exon_idx_stop = (np.where(stop_coord >= exons)[0][-1] // 2 + 1) * 2
+        assert (
+            start_coord <= stop_coord
+        ), f"start coordinate {start_coord} must be smaller than stop coordinate {stop_coord}"
+        exon_idx_start = (
+            max(i for i, exon in enumerate(exons) if start_coord >= exon) // 2 * 2
+        )
+        exon_idx_stop = (
+            max(i for i, exon in enumerate(exons) if stop_coord >= exon) // 2 + 1
+        ) * 2
         if exon_idx_stop > len(exons) - 1:
             exon_idx_stop = None
         genome_parts = exons[exon_idx_start:exon_idx_stop].copy()
-        genome_parts[[0, -1]] = start_coord, stop_coord
+        genome_parts[0], genome_parts[-1] = start_coord, stop_coord
     else:
-        exon_idx_start = np.where(start_coord <= exons)[0][-1] - 1
-        exon_idx_stop = np.where(stop_coord <= exons)[0][-1] + 1
+        assert (
+            start_coord >= stop_coord
+        ), f"start coordinate {start_coord} must be larger than stop coordinate {stop_coord}"
+        exon_idx_start = (
+            max(i for i, exon in enumerate(exons) if start_coord <= exon) - 1
+        )
+        exon_idx_stop = max(i for i, exon in enumerate(exons) if stop_coord <= exon) + 1
         if exon_idx_stop > len(exons) - 1:
             exon_idx_stop = None
         genome_parts = exons[exon_idx_start:exon_idx_stop].copy()
         if len(genome_parts) < 2:
-            genome_parts[[0, -1]] = stop_coord, start_coord
+            genome_parts[0], genome_parts[-1] = stop_coord, start_coord
         else:
-            genome_parts[[1, -2]] = start_coord, stop_coord
+            genome_parts[1], genome_parts[-2] = start_coord, stop_coord
     if exon_idx_stop is None:
         exon_idx_stop = len(exons) + 1
-    exon_numbers = np.arange(exon_idx_start // 2, exon_idx_stop // 2)
+    exon_numbers = list(range(exon_idx_start // 2, exon_idx_stop // 2))
 
-    return list(genome_parts), list(exon_numbers + 1)
+    return list(genome_parts), [num + 1 for num in exon_numbers]
+
+
+def check_genomic_order(coords_flat, strand):
+    """
+    Checks the ordering of exon genomic coordinates based on GTF
+    convention and strand.
+
+    For positive strand (+), exons should be ordered by increasing start coordinate.
+    For negative strand (-), exons should be ordered by decreasing start coordinate.
+
+    Args:
+        coords_flat (list | np.ndarray): A flat list of genomic coordinates in the format
+                            [start1, end1, start2, end2, ...].
+        strand (str): The strand of the transcript, either '+' or '-'.
+
+    Raises:
+        ValueError: If the coordinates are not ordered as expected.
+    """
+
+    # --- Input Validation ---
+    assert isinstance(
+        coords_flat, (list, np.ndarray)
+    ), "Error: coords_flat must be a list or np.array."
+    assert (
+        len(coords_flat) % 2 == 0
+    ), "Error: coords_flat must contain an even number of coordinates (start and end pairs)."
+    assert strand in ["+", "-"], "Error: strand must be either '+' or '-'."
+
+    # --- Convert flat list to list of exon pairs ---
+    exon_pairs = []
+    for i in range(0, len(coords_flat), 2):
+        start = coords_flat[i]
+        end = coords_flat[i + 1]
+        if start > end:
+            raise ValueError(
+                f"Error: Found start coordinate ({start}) greater than end coordinate ({end}) for an exon. GTF standard requires start <= end."
+            )
+        exon_pairs.append([start, end])
+
+    # --- Check ordering based on strand ---
+    if strand == "+":
+        # Ensure exons are ordered by increasing start coordinate
+        for i in range(len(exon_pairs) - 1):
+            if exon_pairs[i][0] > exon_pairs[i + 1][0]:
+                raise ValueError(
+                    f"Error: Exons are not ordered by increasing start coordinate for positive strand. Found {exon_pairs[i]} before {exon_pairs[i + 1]}."
+                )
+    else:  # strand == '-'
+        # Ensure exons are ordered by decreasing start coordinate
+        for i in range(len(exon_pairs) - 1):
+            if exon_pairs[i][0] < exon_pairs[i + 1][0]:
+                raise ValueError(
+                    f"Error: Exons are not ordered by decreasing start coordinate for negative strand. Found {exon_pairs[i]} before {exon_pairs[i + 1]}."
+                )
 
 
 def get_exon_dist_map(tr_regions, strand):
@@ -288,7 +353,7 @@ def find_distant_exon_coord(ref_coord, distance, strand, exons):
         distance (int): distance to reference coordinate, positive distances equate to
             distances downstream of the processed transcript.
         strand (str): strand, either "+" or "-".
-        exons (list): list of exon bound coordinates following gtf file conventions.
+        exons (list | np.array): list of exon bound coordinates following gtf file conventions.
             E.g. positive strand: [1 2 4 5] negative strand: [4 5 1 2]
         region_length (int): length of region, defaults to None, stop_coord is ignored if filled
 

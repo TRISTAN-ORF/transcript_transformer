@@ -5,6 +5,8 @@
 *.gtf
 *.fa
 *.html
+*.h5
+*.yml
 
 # ignore tests
 models/
