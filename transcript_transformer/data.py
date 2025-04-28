@@ -333,7 +333,7 @@ def parse_transcriptome(gtf, DNA_seq):
                 .unpivot()["value"]
                 .to_numpy()
             )
-            check_genomic_order(CDS_coords)
+            check_genomic_order(CDS_coords, "+" if is_pos_strand else "-")
             data_dict["CDS_coords"].append(CDS_coords)
             data_dict["canonical_TIS_exon"].append(exon_i + 1)
             data_dict["canonical_TIS_idx"].append(tis_idx)
@@ -359,7 +359,7 @@ def parse_transcriptome(gtf, DNA_seq):
             data_dict["canonical_LTS_coord"].append(-1)
             data_dict["canonical_protein_seq"].append(None)
         data_dict["exon_idxs"].append(ftr_idxs["exon"])
-        check_genomic_order(exon_coords)
+        check_genomic_order(exon_coords, "+" if is_pos_strand else "-")
         data_dict["exon_coords"].append(np.array(exon_coords))
         data_dict["seq"].append(seq)
         data_dict["tis"].append(target_seq)

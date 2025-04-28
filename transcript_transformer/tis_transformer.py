@@ -83,7 +83,7 @@ def main():
             not args.no_backup,
         )
     # Training
-    if not (args.data or args.results or args.predict):
+    if not (args.data or args.results):
         # determine optimal allocation of seqnames to train/val/test set
         f = h5py.File(args.h5_path, "r")["transcript"]
         contigs = np.array(f["seqname"])

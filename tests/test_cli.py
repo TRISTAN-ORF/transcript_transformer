@@ -67,11 +67,11 @@ def test_sequence_data_loading():
 
 def test_sequence_training():
     files = [
-        "out/tis_transformer_seq.npy",
-        "out/tis_transformer_seq.csv",
-        "out/tis_transformer_seq.gtf",
-        "out/tis_transformer_seq.unfiltered.csv",
-        "out/tis_transformer_seq.unfiltered.gtf",
+        "out/tis_transformer.npy",
+        "out/tis_transformer.csv",
+        "out/tis_transformer.gtf",
+        "out/tis_transformer.unfiltered.csv",
+        "out/tis_transformer.unfiltered.gtf",
     ]
     remove_if_exists(files)
 
