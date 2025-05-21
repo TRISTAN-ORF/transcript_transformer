@@ -5,8 +5,6 @@ from h5max import load_sparse_matrix
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 
-from pdb import set_trace
-
 
 def collate_fn(batch):
     """
@@ -14,12 +12,17 @@ def collate_fn(batch):
     sequence at the beginning and end.
     in addition, the varying input length sequences are padded using the predetermined token 7.
     These tokens are only processed as nucleotide embeddings, if these are used by the model.
+    batch[0] = transcript IDs
+    batch[1] = input features (seq/ribo)
+    batch[2] = target labels
     """
     if type(batch[0][0]) == list:
         batch = batch[0]
     lens = np.array([len(s) for s in batch[2]])
+    # assert lens[0] == len(
+    #     batch[1][0]["ribo"]
+    # ), "x and y lengths do not match, if using --parallel, genomic DB might be newer"
     max_len = max(lens)
-
     y_b = torch.LongTensor(
         np.array(
             [
@@ -29,6 +32,7 @@ def collate_fn(batch):
         )
     )
     x_dict = {}
+    # k = "seq" or "ribo"
     for k in batch[1][0].keys():
         # if the entries are multidimensional: positions , read lengths
         if len(batch[1][0][k].shape) > 1:
@@ -64,7 +68,6 @@ def collate_fn(batch):
                     print(k, len(x[k]), l)
                     print(x[k])
                     print(batch[0][i])
-                    set_trace()
             x_dict[k] = torch.LongTensor(arr)
 
     x_dict.update({"x_id": batch[0], "y": y_b})
@@ -130,11 +133,14 @@ def bucket(data, lens, max_memory, max_transcripts_per_batch, dataset):
             data = data[:num_samples]
             lens = lens[:num_samples]
 
-    assert len(data) > 0, f"No data samples left in {dataset} set"
-    # always true?
-    if l[-1] == len(data):
-        l = l[:-1]
-    return np.split(data, l)
+    if len(data) == 0:
+        print(f"No data samples left in {dataset} set")
+        return []
+    else:
+        # always true?
+        if l[-1] == len(data):
+            l = l[:-1]
+        return np.split(data, l)
 
 
 class h5pyDataModule(pl.LightningDataModule):
@@ -223,17 +229,20 @@ class h5pyDataModule(pl.LightningDataModule):
             g: np.full_like(global_mask, True) for g in self.grouped_ribo_ids.keys()
         }
         if stage == "fit" or stage is None:
-            print(f"--> Training seqnames: {[t.decode() for t in self.seqns['train']]}")
-            print(f"--> Validation seqnames: {[t.decode() for t in self.seqns['val']]}")
+            train_seqnames = b", ".join(self.seqns["train"]).decode("utf-8")
+            print(f"\t -- Train set seqnames: {train_seqnames}")
+            val_seqnames = b", ".join(self.seqns["val"]).decode("utf-8")
+            print(f"\t -- Validation set seqnames: {val_seqnames}")
             if len(self.seqns["test"]) > 0:
-                print(f"--> Test seqnames: {[t.decode() for t in self.seqns['test']]}")
+                test_seqnames = b", ".join(self.seqns["test"]).decode("utf-8")
+                print(f"\t -- Test set seqnames: {test_seqnames}")
             # train set
             seqn_mask = np.isin(self.seqn_list, np.array(self.seqns["train"]))
             mask = np.logical_and(global_mask, seqn_mask)
             self.tr_idx, self.tr_len, self.tr_idx_adj, self.train_groups = (
                 self.prepare_sets(mask, group_masks)
             )
-            print(f"--> Training set transcripts: {len(self.tr_idx)}")
+            print(f"\t -- Training set transcript count: {len(self.tr_idx)}")
             assert len(self.tr_idx) > 0, "No transcripts in training data"
             # validation set
             seqn_mask = np.isin(self.seqn_list, self.seqns["val"])
@@ -248,18 +257,20 @@ class h5pyDataModule(pl.LightningDataModule):
                 self.val_idx, self.val_len, self.val_idx_adj, self.val_groups = (
                     self.prepare_sets(val_mask, group_masks)
                 )
-            print(f"--> Validation set transcripts: {len(self.val_idx)}")
+            print(f"\t -- Validation set transcript count: {len(self.val_idx)}")
             assert len(self.val_idx) > 0, "No transcripts in validation data"
         if stage in ["test", "predict"] or stage is None:
-            print(f"--> Test seqnames: {[t.decode() for t in self.seqns['test']]}")
+            test_seqnames = b", ".join(self.seqns["test"]).decode("utf-8")
+            print(f"\t -- Test set seqnames: {test_seqnames}")
             seqn_mask = np.isin(self.seqn_list, self.seqns["test"])
             # Only mask transcript lengths instead of all
             test_mask = np.logical_and(seqn_mask, global_masks[0])
             self.te_idx, self.te_len, self.te_idx_adj, self.te_groups = (
                 self.prepare_sets(test_mask, dummy_mask)
             )
-            print(f"--> Test set transcripts: {len(self.te_idx)}")
-            assert len(self.te_idx) > 0, "No transcripts in test data"
+            print(f"\t -- Test set transcript count: {len(self.te_idx)}")
+            if len(self.te_idx) == 0:
+                print("No transcripts in test data")
 
     def evaluate_masks(self):
         """
@@ -295,6 +306,7 @@ class h5pyDataModule(pl.LightningDataModule):
         f = h5py.File(self.h5_path, "r")[self.exp_path]
         global_masks = []
         for key, cond_f in self.cond["global"].items():
+            # apply condition formula over column in hdf5 database
             mask = cond_f(np.array(f[key]))
             # leaky frac allows percentage-wise randomly selected samples to be included
             # in the training set, even if they do not pass the filtering condition
@@ -306,7 +318,6 @@ class h5pyDataModule(pl.LightningDataModule):
         global_mask = np.logical_and.reduce(global_masks)
         # Masks over the samples applied per group of datasets
         group_masks = {}
-        print(self.cond)
         for group, cond_dict in self.cond["grouped"].items():
             group_mask = [np.full_like(global_mask, True)]
             for key, cond_f in cond_dict.items():

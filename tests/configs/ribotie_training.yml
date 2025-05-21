@@ -22,7 +22,7 @@ h5_path : dbs/ribotie_training.h5
 ########################################################
 ## Out prefix for predictions, defaults to hdf5 path
 ########################################################
-out_prefix : out/
+out_prefix : out/rt_training
 #
 ####################
 ## ADVANCED SETUP ##

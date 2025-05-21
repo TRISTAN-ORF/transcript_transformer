@@ -21,7 +21,7 @@ h5_path : dbs/ribotie_bam_loading.h5
 ########################################################
 ## Out prefix for predictions, defaults to hdf5 path
 ########################################################
-out_prefix : out/
+out_prefix : out/rt_bam_loading
 #
 ####################
 ## ADVANCED SETUP ##

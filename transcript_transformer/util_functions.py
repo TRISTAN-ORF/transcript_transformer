@@ -1,7 +1,9 @@
-import sys
-from datetime import datetime
+import os
+import shutil
+import yaml
 import numpy as np
 import heapq
+from datetime import datetime
 from transcript_transformer import CDN_PROT_DICT, PROT_IDX_DICT, DNA_IDX_DICT
 
 
@@ -73,8 +75,8 @@ def listify(array):
     return [list(a) for a in array]
 
 
-def time():
-    return datetime.now().strftime("%H:%M:%S %m-%d ")
+def prtime(string, prefix=""):
+    print(f"{prefix}{datetime.now().strftime('%H:%M:%S %m-%d')} : {string}")
 
 
 def vec2DNA(vec, np_dict=np.array(["A", "T", "C", "G", "N"])):
@@ -124,7 +126,7 @@ def divide_keys_by_size(size_dict, num_chunks):
     return {i: {x: y for x, y in zip(k, v)} for i, (k, v) in enumerate(folds)}
 
 
-def define_folds(seqn_size_dict, test=0.2, val=0.2):
+def find_optimal_folds(seqn_size_dict, test=0.2, val=0.2):
     """Finds closest possible folds for given seqnames.
 
     Args:
@@ -145,7 +147,7 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
     if len(seqname_set) < test_chunks:
         test_chunks = len(seqname_set)
         print(
-            f"!-> Not enough seqnames to divide data, increasing test set"
+            f"!- Not enough seqnames to divide data, increasing test set"
             f" to {(1/test_chunks)*100:.1f}% of full data"
         )
     # group seqnames in number of parts that will allow listed test set fraction
@@ -159,7 +161,7 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
         if len(tr_val_lens) < val_chunks_set:
             val_chunks = len(tr_val_lens)
             print(
-                f"!-> Not enough seqnames to divide data, increasing val set to"
+                f"\t !- Not enough seqnames to divide data, increasing val set to"
                 f" {(1/val_chunks)*100:.1f}% of train/val data in fold {fold_i}"
             )
         else:
@@ -178,7 +180,7 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
         tr = [t.decode() for t in train_set]
         val = [t.decode() for t in val_set]
         test = [t.decode() for t in test_set]
-        print(f"\tFold {fold_i}: train: {tr}, val: {val}, test: {test}")
+        print(f"\t -- Fold {fold_i}: train: {tr}, val: {val}, test: {test}")
         folds[fold_i] = {
             "train": tr,
             "val": val,
@@ -186,6 +188,31 @@ def define_folds(seqn_size_dict, test=0.2, val=0.2):
         }
 
     return folds
+
+
+def merge_outputs(prefix, keys):
+    outputs = []
+    for path in [f"{prefix}_f{i}.npy" for i in keys]:
+        output = np.load(path, allow_pickle=True)
+        if len(output) > 0:
+            outputs.append(output)
+    out = np.vstack(outputs)
+
+    np.save(f"{prefix}.npy", out)
+
+
+def load_args(path, args):
+    with open(path, "r") as fh:
+        input_config = yaml.safe_load(fh)
+    args.__dict__.update(input_config)
+
+    return args
+
+
+def mv_ckpt_to_out_dir(trainer, out_prefix):
+    ckpt_path = os.path.join(trainer.logger.log_dir, "checkpoints")
+    weights_path = os.path.join(ckpt_path, os.listdir(ckpt_path)[0])
+    shutil.copy(weights_path, f"{out_prefix}.ckpt")
 
 
 def transcript_region_to_exons(
@@ -245,7 +272,7 @@ def transcript_region_to_exons(
             genome_parts[1], genome_parts[-2] = start_coord, stop_coord
     if exon_idx_stop is None:
         exon_idx_stop = len(exons) + 1
-    exon_numbers = list(range(exon_idx_start // 2, exon_idx_stop // 2))
+    exon_numbers = list(np.arange(exon_idx_start // 2, exon_idx_stop // 2, dtype=int))
 
     return list(genome_parts), [num + 1 for num in exon_numbers]
 

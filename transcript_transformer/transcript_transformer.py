@@ -1,7 +1,6 @@
-import argparse
-import sys
 import os
 import numpy as np
+import logging
 import itertools
 from fasta_reader import read_fasta
 
@@ -19,80 +18,18 @@ from .transcript_loader import (
 )
 from .util_functions import DNA2vec
 from .processing import process_seq_preds
-from .data import process_seq_data, process_ribo_data
-from .argparser import Parser
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Transcript Transformer launch pad",
-        usage="""transcript_transformer <command> [<args>]
-            Commands:
-            data      process raw data for use with transcript-transformer
-            pretrain  Pretrain a model using self-supervised objective
-            train     Train a model to detect TIS locations on transcripts
-            predict   Predict TIS locations from input data
-        """,
-    )
-    parser.add_argument("command", help="Subcommand to run")
-    args = parser.parse_args(sys.argv[1:2])
-    if args.command not in ["data", "pretrain", "train", "predict"]:
-        print("Unrecognized command")
-        parser.print_help()
-        exit(1)
-    # use dispatch pattern to invoke method with same name
-    if args.command == "data":
-        parser = Parser(stage="data", description="Parse data in the h5 file")
-        parser.add_data_args()
-        args = parser.parse_arguments(sys.argv[2:])
-        process_seq_data(
-            args.h5_path, args.gtf_path, args.fa_path, args.backup_path, ~args.no_backup
-        )
-        if args.use_ribo:
-            process_ribo_data(
-                args.h5_path, args.ribo_paths, args.overwrite, args.low_memory
-            )
-    elif args.command == "pretrain":
-        parser = Parser(
-            stage="train", description="Pretrain transformer using MLM objective"
-        )
-        parser.add_train_loading_args()
-        parser.add_selfsupervised_args()
-        parser.add_training_args()
-        parser.add_comp_args()
-        parser.add_evaluation_args()
-        parser.add_architecture_args()
-        args = parser.parse_arguments(sys.argv[2:])
-        assert not (
-            args.use_ribo and args.use_seq
-        ), "One input type allowed for self-supervised objective"
-        assert args.offsets is None, "offsets not supported for MLM objective"
-        args.mlm = "seq" if args.use_seq else "ribo"
-        train(args)
-    elif args.command == "train":
-        parser = Parser(
-            stage="train",
-            description="Train a transformer using sequence or ribo-seq data",
-        )
-        parser.add_train_loading_args()
-        parser.add_training_args()
-        parser.add_comp_args()
-        parser.add_evaluation_args()
-        parser.add_architecture_args()
-        args = parser.parse_arguments(sys.argv[2:])
-        args.mlm, args.mask_frac, args.rand_frac = False, False, False
-        train(args)
-    else:
-        parser = Parser(
-            stage="predict", description="Predict translation initiation sites"
-        )
-        parser.add_custom_data_args()
-        parser.add_predict_loading_args()
-        parser.add_comp_args()
-        parser.add_evaluation_args()
-        parser.add_preds_args()
-        args = parser.parse_arguments(sys.argv[2:])
-        predict(args)
+def device_info_filter(record):
+    return "PU available: " not in record.getMessage()
+
+
+def acc_info_filter(record):
+    return "LOCAL_RANK: " not in record.getMessage()
+
+
+logging.getLogger("pytorch_lightning.utilities.rank_zero").addFilter(device_info_filter)
+logging.getLogger("pytorch_lightning.accelerators.cuda").addFilter(acc_info_filter)
 
 
 def train(args, test_model=True, enable_model_summary=True):
@@ -170,7 +107,10 @@ def train(args, test_model=True, enable_model_summary=True):
         save_top_k=1,
         mode="min",
     )
-    tb_logger = pl.loggers.TensorBoardLogger(".", os.path.join(args.log_dir, args.name))
+    log_dir = os.path.join(os.path.dirname(args.out_prefix), "models")
+    tb_logger = pl.loggers.TensorBoardLogger(
+        ".", os.path.join(log_dir, os.path.basename(args.out_prefix))
+    )
     if args.debug:
         trainer = pl.Trainer(
             args.accelerator,
@@ -205,7 +145,6 @@ def train(args, test_model=True, enable_model_summary=True):
         trainer.test(model, datamodule=tr_loader, ckpt_path="best")
 
     return trainer, model
-    # trainer.predict(model, dataloaders=tr_loader, ckpt_path="best")
 
 
 def predict(args, trainer=None, model=None, postprocess=True):
@@ -276,41 +215,44 @@ def predict(args, trainer=None, model=None, postprocess=True):
             DNADatasetBatches(tr_ids, x_data), collate_fn=collate_fn, batch_size=1
         )
 
-    print("\nRunning sequences through model")
     out = trainer.predict(model, dataloaders=tr_loader, ckpt_path=ckpt_path)
-    ids = list(itertools.chain(*[o[2] for o in out]))
-    preds = list(itertools.chain(*[o[0] for o in out]))
+    if out is not None:
+        ids = list(itertools.chain(*[o[2] for o in out]))
+        preds = list(itertools.chain(*[o[0] for o in out]))
 
-    if args.input_type == "hdf5":
-        targets = list(itertools.chain(*[o[1] for o in out]))
-        out = [ids, preds, targets]
-    else:
-        out = [ids, preds]
-
-    if postprocess:
-        mask = [np.where(pred > args.min_prob)[0] for pred in preds]
-        if len(np.hstack(mask)) > 0:
-            df = process_seq_preds(ids, preds, tr_seqs, args.min_prob)
-            print(df)
-            df.to_csv(f"{args.out_prefix}.csv", index=None)
-            print(f"\n--> Sites of interest saved to '{args.out_prefix}.csv'")
+        if args.input_type == "hdf5":
+            targets = list(itertools.chain(*[o[1] for o in out]))
+            out = [ids, preds, targets]
         else:
-            print(
-                f"\n!-> No sites of interest found (omitted creation of '{args.out_prefix}.csv')"
-            )
+            out = [ids, preds]
+
+        if postprocess:
+            mask = [np.where(pred > args.min_prob)[0] for pred in preds]
+            if len(np.hstack(mask)) > 0:
+                df = process_seq_preds(ids, preds, tr_seqs, args.min_prob)
+                print(df)
+                df.to_csv(f"{args.out_prefix}.csv", index=None)
+                print(f"\t -- Sites of interest saved to '{args.out_prefix}.csv'")
+            else:
+                print(
+                    f"\t !-> No sites of interest found (omitted creation of '{args.out_prefix}.csv')"
+                )
+    else:
+        out = []
 
     np.save(
         f"{args.out_prefix}.npy",
         np.array(out, dtype=object).T,
     )
-
-    print(f"-->Raw model outputs saved to '{args.out_prefix}.npy'")
+    print(f"\t -- Raw model outputs saved to '{args.out_prefix}.npy'")
 
     return
 
 
 def main():
-    args = parse_args()
+    print(
+        "transcript_transformer script is now deprecated, Use 'tis_transformer' or 'ribotie' instead."
+    )
 
 
 if __name__ == "__main__":
