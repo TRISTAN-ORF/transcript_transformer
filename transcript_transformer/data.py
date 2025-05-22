@@ -21,33 +21,34 @@ from .util_functions import (
     slice_gen,
     prot2vec,
     check_genomic_order,
+    prtime,
 )
 from transcript_transformer import REQ_HEADERS, CUSTOM_HEADERS, DROPPED_HEADERS
 
 
 def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
+    prtime("Loading in assembly data...", "\n")
     pulled = False
     if not backup_path:
         backup_path = os.path.splitext(gtf_path)[0] + ".h5"
     if os.path.abspath(backup_path) == os.path.abspath(h5_path):
         print(
-            f"!-> Backup path identical to h5 output path, no database copy will be created..."
+            f"\t !- Backup path identical to h5 output path, no database copy will be created..."
         )
         backup = False
     elif not os.path.isfile(h5_path) and os.path.isfile(backup_path):
-        print(f"--> Processed assembly data restored ({backup_path})")
+        print(f"\t -- Processed assembly data restored ({backup_path})")
         shutil.copy(backup_path, h5_path)
         pulled = True
     if os.path.isfile(h5_path):
         f = h5py.File(h5_path, "r")
         if "transcript" in f.keys():
             print(
-                "--> Parsed transcriptome directory found, "
+                "\t -- Parsed transcriptome directory found, "
                 "assembly information can not be re-processed (for existing h5 files)."
             )
         f.close()
     else:
-        print("--> Loading in assembly data...")
         DNA_seq = pyfaidx.Fasta(fa_path)
         gtf = read_gtf(gtf_path, result_type="polars")
         # use biobear instead (does not work well)
@@ -65,8 +66,10 @@ def process_seq_data(h5_path, gtf_path, fa_path, backup_path, backup=True):
                 f = h5py.File(h5_path, "a")
                 no_handle = False
                 try:
+                    print(f"\t -- Saving transcriptome data to {h5_path}...")
                     f = save_transcriptome_to_h5(f, db_tr)
                     if len(db_gtf) > 0:
+                        print(f"\t -- Saving genome data to {h5_path}...")
                         f = save_genome_to_h5(f, db_gtf)
                     f.close()
                     if backup and (not pulled):
@@ -89,6 +92,7 @@ def process_ribo_data(
     parallel=False,
     low_memory=False,
 ):
+    prtime("Loading in Ribo-seq data...", "\n")
     # TODO implement option to run custom read lens
     read_lims = [20, 41]
     # load from hdf5 file
@@ -110,20 +114,22 @@ def process_ribo_data(
         )
         if cond_1 or cond_2:
             print(
-                f"--> {sample_id} in h5, omitting..."
-                "(use --overwrite for overwriting existing riboseq data)"
+                f"\t -- {sample_id} in h5, omitting..."
+                "(use --overwrite_data for overwriting existing riboseq data)"
             )
             samples_to_process.pop(sample_id)
     f.close()
     for sample_id, path in samples_to_process.items():
-        print(f"--> Loading in {sample_id}...")
+        prtime(f"Loading in {sample_id}...", "\n")
         riboseq_data = parse_ribo_reads(path, read_lims, tr_ids, tr_lens, low_memory)
         try:
-            print("\t -- Saving data...")
             if not parallel:
+                print(f"\t -- Saving data to {h5_path}...")
                 f = h5py.File(h5_path, "a")
             else:
-                f = h5py.File(h5_path.split(".h5")[0] + f"_{sample_id}.h5", "w")
+                path = h5_path.split(".h5")[0] + f"_{sample_id}.h5"
+                print(f"\t -- Saving data to {path}...")
+                f = h5py.File(path, "w")
                 f.create_group("transcript")
             if "riboseq" not in f["transcript"].keys():
                 f["transcript"].create_group("riboseq")
@@ -142,7 +148,6 @@ def process_ribo_data(
 
 
 def save_genome_to_h5(f, db):
-    print("--> Saving gene data to hdf5 files...")
     grp = f.create_group("gene")
     for key in db.columns:
         if db[key].dtype == pl.Categorical:
@@ -161,7 +166,6 @@ def save_genome_to_h5(f, db):
 
 
 def save_transcriptome_to_h5(f, db):
-    print("\t -- Saving data...")
     dt8 = h5py.vlen_dtype(np.dtype("int8"))
     dt = h5py.vlen_dtype(np.dtype("int"))
     grp = f.create_group("transcript")

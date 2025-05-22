@@ -4,13 +4,19 @@ import yaml
 import argparse
 import importlib
 import numpy as np
+from typing import cast
+from importlib.resources import files
+
+from transcript_transformer import TT_DICT
+from .util_functions import load_args
 
 
 class Parser(argparse.ArgumentParser):
-    def __init__(self, stage="None", **kwargs):
+    def __init__(self, stage="None", tool=None, **kwargs):
         super().__init__(
             formatter_class=argparse.ArgumentDefaultsHelpFormatter, **kwargs
         )
+        self.tool = tool
         self.add_argument(
             "conf",
             nargs="*",
@@ -18,6 +24,31 @@ class Parser(argparse.ArgumentParser):
         )
         if stage == "train":
             self.add_misc_args()
+
+    def add_run_args(self):
+        run_parse = self.add_argument_group("Run processing arguments")
+        run_parse.add_argument(
+            "--data",
+            action="store_true",
+            help="only perform loading of data into hdf5 databases",
+        )
+        run_parse.add_argument(
+            "--overwrite_data",
+            action="store_true",
+            help="overwrite databases if already previously created",
+        )
+        run_parse.add_argument(
+            "--overwrite_models",
+            action="store_true",
+            help="overwrite trained models if already present.",
+        )
+        run_parse.add_argument(
+            "--overwrite_preds",
+            action="store_true",
+            help="overwrite model predictions if already present.",
+        )
+
+        return run_parse
 
     def add_data_args(self):
         input_parse = self.add_argument_group("Data processing arguments")
@@ -47,21 +78,11 @@ class Parser(argparse.ArgumentParser):
             "database, e.g., in combination with running --parallel",
         )
         input_parse.add_argument(
-            "--out_prefix",
-            type=str,
-            help="output prefix used for all output files, defaults to derivative of 'h5_path'",
-        )
-        input_parse.add_argument(
             "--cond",
             type=json.loads,
             help="remove transcripts from training based on transcript properties. This does not affect "
             "transcripts in validation/test sets. Currently only supports number of mapped riboseq reads "
             "property. Can filter per dataset. See template.yml file for more examples",
-        )
-        input_parse.add_argument(
-            "--overwrite",
-            action="store_true",
-            help="overwrite ribo-seq data when id is already present in h5 file",
         )
         input_parse.add_argument(
             "--parallel",
@@ -94,16 +115,65 @@ class Parser(argparse.ArgumentParser):
         input_parse.add_argument(
             "--cores",
             type=int,
-            default=8,
+            default=6,
             help="number of processor cores used for data processing",
         )
 
         return input_parse
 
+    def add_processing_args(self):
+        pr_parse = self.add_argument_group("Output processing arguments")
+        pr_parse.add_argument(
+            "--out_prefix",
+            type=str,
+            help="output prefix used for all output files, defaults to derivative of 'h5_path'",
+        )
+        pr_parse.add_argument(
+            "--prob_cutoff",
+            type=float,
+            default=0.125,
+            help="Determines the minimum model output score required for model "
+            "predictions to be included in the result table.",
+        )
+        pr_parse.add_argument(
+            "--start_codons",
+            type=str,
+            default=".*TG$",
+            help="Valid start codons to include in result table. Uses regex string.",
+        )
+        pr_parse.add_argument(
+            "--min_ORF_len",
+            type=int,
+            default="15",
+            help="Minimum nucleotide length of predicted translated open reading frames.",
+        )
+        pr_parse.add_argument(
+            "--include_invalid_TTS",
+            action="store_true",
+            help="Include translated ORF predictions with no TTS on transcript.",
+        )
+        pr_parse.add_argument(
+            "--keep_duplicates",
+            action="store_true",
+            help="Don't remove duplicate ORFs resulting from the correction step.",
+        )
+        pr_parse.add_argument(
+            "--exclude_annotated",
+            action="store_true",
+            help="Exclude annotated CDS regions in generated GTF file containing predicted translated ORFs.",
+        )
+        pr_parse.add_argument(
+            "--return_ORF_coords",
+            action="store_true",
+            help="Include full exon coordinates of predicted CDSs to result table (these are always present in GTF file).",
+        )
+
+        return pr_parse
+
     def add_comp_args(self):
         comp_parse = self.add_argument_group("Computational resources arguments")
         comp_parse.add_argument(
-            "--num_workers", type=int, default=8, help="number of processor cores"
+            "--num_workers", type=int, default=2, help="number of processor cores"
         )
         comp_parse.add_argument(
             "--max_memory",
@@ -221,72 +291,37 @@ class Parser(argparse.ArgumentParser):
 
         return tf_parse
 
-    def add_predict_loading_args(self):
+    def add_train_loading_args(self):
         dl_parse = self.add_argument_group("Data loading arguments")
         dl_parse.add_argument(
-            "transfer_checkpoint",
+            "--transfer_checkpoint",
             type=str,
-            help="Path to checkpoint trained model",
+            help="Path to checkpoint pretrained model",
         )
         dl_parse.add_argument(
-            "--test",
-            type=str,
-            nargs="*",
-            default=[],
-            help="chromosomes from h5 database to predict on",
+            "--folds",
+            type=json.loads,
+            default=None,
+            help="Yaml file containing seqname/contig allocations for training, validation"
+            "and test sets per fold."
+            "Recommended to leave empty to automatically detect folds of equal size.",
         )
         dl_parse.add_argument(
-            "--min_seq_len",
-            type=int,
-            default=0,
-            help="minimum sequence length of transcripts",
+            "--val_frac",
+            type=float,
+            default=0.2,
+            help="Determines the fraction of the training set to be used for "
+            "validation. The remaining fraction is used for training."
+            "Ignored when using --train, --val or --test, or --folds.",
         )
         dl_parse.add_argument(
-            "--max_seq_len",
-            type=int,
-            default=50000,
-            help="maximum sequence length of transcripts",
+            "--test_frac",
+            type=float,
+            default=0.2,
+            help="Determines the fraction of the full set to be used for "
+            "testing. The remaining fraction is used for training/validation."
+            "Ignored when using --train, --val or --test, or --folds.",
         )
-        dl_parse.add_argument(
-            "--max_transcripts_per_batch",
-            type=int,
-            default=2000,
-            help="maximum of transcripts per batch",
-        )
-
-        return dl_parse
-
-    def add_train_loading_args(self, pretrain=False, auto=False):
-        dl_parse = self.add_argument_group("Data loading arguments")
-        if not pretrain:
-            dl_parse.add_argument(
-                "--transfer_checkpoint",
-                type=str,
-                help="Path to checkpoint pretrained model",
-            )
-        if not auto:
-            dl_parse.add_argument(
-                "--train",
-                type=str,
-                nargs="*",
-                default=[],
-                help="chromosomes used for training. If not specified, "
-                "training is performed on all available chromosomes excluding val/test seqnames",
-            )
-            dl_parse.add_argument(
-                "--val",
-                type=str,
-                nargs="*",
-                default=[],
-                help="chromosomes used for validation",
-            )
-            dl_parse.add_argument(
-                "--test",
-                type=str,
-                nargs="*",
-                default=[],
-                help="chromosomes used for testing",
-            )
         dl_parse.add_argument(
             "--strict_validation",
             action="store_true",
@@ -322,31 +357,6 @@ class Parser(argparse.ArgumentParser):
 
     def add_training_args(self):
         tr_parse = self.add_argument_group("Model training arguments")
-        tr_parse.add_argument(
-            "--pretrain",
-            action="store_true",
-            help="pretrain model using all available samples. Highly recommended for riboformer"
-            " if no suitable pre-trained model is not available (e.g., when applied on new species)",
-        )
-        tr_parse.add_argument(
-            "--folds",
-            type=json.loads,
-            default=None,
-            help="only for --pretrain. Recommended to leave empty to automatically detect folds of equal size. "
-            "Dictionary containing the seqnames/contigs for the training, validation and test.",
-        )
-        tr_parse.add_argument(
-            "--log_dir",
-            type=str,
-            default="models",
-            help="folder in which training logs and model checkpoints are generated.",
-        )
-        tr_parse.add_argument(
-            "--name",
-            type=str,
-            default="",
-            help="name of the model/run",
-        )
         tr_parse.add_argument("--lr", type=float, default=1e-3, help="learning rate")
         tr_parse.add_argument(
             "--decay_rate",
@@ -373,6 +383,7 @@ class Parser(argparse.ArgumentParser):
 
         return tr_parse
 
+    # TODO Cleanup
     def add_selfsupervised_args(self):
         ss_parse = self.add_argument_group("Self-supervised training arguments")
         ss_parse.add_argument(
@@ -404,6 +415,7 @@ class Parser(argparse.ArgumentParser):
 
         return ev_parse
 
+    # TODO Cleanup
     def add_custom_data_args(self):
         cd_parse = self.add_argument_group("Custom data loading arguments")
         cd_parse.add_argument(
@@ -423,24 +435,6 @@ class Parser(argparse.ArgumentParser):
 
         return cd_parse
 
-    # TODO Cleanup
-    def add_preds_args(self):
-        pr_parse = self.add_argument_group("Model prediction processing arguments")
-        pr_parse.add_argument(
-            "--min_prob",
-            type=float,
-            default=0.01,
-            help="minimum prediction threshold at which additional information is processed",
-        )
-        pr_parse.add_argument(
-            "--out_prefix",
-            type=str,
-            default="results",
-            help="path (prefix) of output files, ignored if using config input file",
-        )
-
-        return pr_parse
-
     def add_misc_args(self):
         ms_parse = self.add_argument_group("Miscellaneous arguments")
         ms_parse.add_argument(
@@ -457,47 +451,78 @@ class Parser(argparse.ArgumentParser):
         return ms_parse
 
     def parse_arguments(self, argv, configs=[]):
+        # --- Config file loading ---
         # update default values (before --help is called)
-        model_dir = ""
+        model_dir = None
         for conf in configs:
             with open(conf, "r") as f:
                 if conf[-4:] == "json":
                     input_config = json.load(f)
                 else:
                     input_config = yaml.safe_load(f)
-                if "pretrained_model" in input_config.keys():
+                if ("pretrained_model" in input_config.keys()) or (
+                    "trained_model" in input_config.keys()
+                ):
                     model_dir = os.path.dirname(os.path.realpath(f.name))
                 self.set_defaults(**input_config)
+
         # parse arguments
         args = self.parse_args(argv)
-        # read passed config file
+        # read passed config files
         for conf in args.conf:
             with open(conf, "r") as f:
-                if conf[-4:] == "json":
-                    input_config = json.load(f)
-                else:
-                    input_config = yaml.safe_load(f)
+                # Load config file
+                try:
+                    if conf[-4:] == "json":
+                        input_config = json.load(f)
+                    else:
+                        input_config = yaml.safe_load(f)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to load config file '{conf}': {e}. Is this a valid YAML or JSON file?"
+                    )
+
+                if ("pretrained_model" in input_config.keys()) or (
+                    "trained_model" in input_config.keys()
+                ):
+                    model_dir = os.path.dirname(os.path.realpath(f.name))
                 self.set_defaults(**input_config)
+
+        # --- Config parameter parsing ---
+        # Parse h5_path properly
+        if args.h5_path:
+            args.h5_path = f"{args.h5_path.split('.h5')[0].split('.hdf5')[0]}.h5"
         # override config file with bash inputs
         args = self.parse_args()
         args.model_dir = model_dir
+        args.missing_models = True
         # create output dir if non-existent
         if args.out_prefix:
             os.makedirs(
                 os.path.dirname(os.path.abspath(args.out_prefix)), exist_ok=True
             )
+            if args.out_prefix[-1] == "_":
+                args.out_prefix = args.out_prefix[:-1]
+        else:
+            args.out_prefix = args.h5_path[:-3]
+        # ensure out_prefix is not directory
+        cond_1 = not os.path.normpath(args.out_prefix).endswith(os.path.sep)
+        cond_2 = not os.path.isdir(os.path.normpath(args.out_prefix))
+        assert (
+            cond_1 and cond_2
+        ), "args.out_prefix seems to be pointing at a directory, add file suffix"
         # backward compatibility
         if "seq" in args:
             args.use_seq = args.seq
+
         # determine presence of ribo samples
         args.use_ribo = (
             "ribo_paths" in args
             and isinstance(args.ribo_paths, dict)
             and bool(args.ribo_paths)
         )
-        if args.h5_path:
-            args.h5_path = f"{args.h5_path.split('.h5')[0].split('.hdf5')[0]}.h5"
 
+        # Create library of ribo-seq samples according to configuration file groupings
         if args.use_ribo:
             # by default, the keys are both the group names and individual sample names (first idx of list)
             init_paths = {k: [[k, v]] for k, v in args.ribo_paths.items()}
@@ -581,7 +606,51 @@ class Parser(argparse.ArgumentParser):
                 else:
                     tmp_dict = {f"{key}": lambda x: eval(item)}
                     conds["global"].update(tmp_dict)
-
         args.cond = conds
+
+        # Check existing outputs
+        assert not (
+            (("trained_model" in args) or ("model" in args)) and args.overwrite_models
+        ), "'--trained_model' or '--model' cannot be used with '--overwrite_models'"
+
+        # RiboTIE
+        # Check if previously pretrained model exists. This step is performed here in order
+        # to populate args.folds before these are determined based on the h5 db
+        if (
+            ("pretrain" in args)
+            and args.pretrain
+            and (not args.data)
+            and (not args.overwrite_models)
+        ):
+            file = f"{args.out_prefix}_pretrain_params.yml"
+            if os.path.isfile(file):
+                args.missing_models = False
+                args = load_args(file, args)
+                args.folds = args.pretrained_model["folds"]
+
+        # TIS Transformer
+        # Check if previously trained model exists or is called.
+        # This step is performed here in order to populate args.folds before
+        # these are determined based on the h5 db
+        if (
+            (not args.data)
+            and (self.tool == "tis_transformer")
+            and (not args.overwrite_models)
+        ):
+            file = f"{args.out_prefix}_params.yml"
+            # args.model takes precedence over args.trained_model or default output model
+            if args.model is not None:
+                model_path = files("transcript_transformer.pretrained.tt_models")
+                args.model_dir = os.fspath(cast(os.PathLike, model_path))
+                model_config = args.model_dir.joinpath(TT_DICT[args.model])
+                args = load_args(os.fspath(model_config), args)
+            # If output model exists and no other model is listed
+            elif os.path.isfile(file) and ("trained_model" not in args):
+                args = load_args(file, args)
+
+            # list folds parameter directly in args
+            if "trained_model" in args:
+                args.folds = args.trained_model["folds"]
+
         print(args)
         return args

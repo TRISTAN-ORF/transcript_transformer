@@ -5,7 +5,6 @@ import pandas as pd
 import polars as pl
 from scipy.stats import entropy
 from scipy.sparse import csr_matrix
-
 from transcript_transformer import (
     RIBOTIE_MQC_HEADER,
     START_CODON_MQC_HEADER,
@@ -21,7 +20,7 @@ from transcript_transformer import (
 )
 from .util_functions import (
     construct_prot,
-    time,
+    prtime,
     check_genomic_order,
     find_distant_exon_coord,
     transcript_region_to_exons,
@@ -281,74 +280,111 @@ def construct_output_table(
     ribo_output=None,
     grouped_ribo_ids={},
     parallel=False,
+    return_ORF_coords=False,
 ):
     f = h5py.File(h5_path, "r")
     f_tr_ids = np.array(f["transcript/transcript_id"])
     f_headers = pl.Series(f["transcript"].keys())
     f_headers = f_headers.filter(~f_headers.is_in(["riboseq", "tis"]))
+    has_tt_output = "tis_transformer_score" in f_headers
+    f_headers = f_headers.filter(f_headers != "tis_transformer_score")
+    has_rt_output = ribo_output is not None
+    assert has_tt_output or has_rt_output, "no model predictions found"
+    tool_scores = np.array(["ribotie_score", "tis_transformer_score"])[
+        [has_rt_output, has_tt_output]
+    ].tolist()
+    # Add whichever other column info provided when GTF was first parsed
     xtr_heads = (
         pl.Series(f_headers)
         .filter(~pl.Series(f_headers).is_in(STANDARD_HEADERS))
         .to_list()
     )
-    has_tis_transformer_score = "tis_transformer_score" in f_headers
-    has_ribo_output = ribo_output is not None
-    assert has_tis_transformer_score or has_ribo_output, "no model predictions found"
-    print(f"--> Processing {out_prefix}...")
-
-    if has_ribo_output:
+    prtime(f"Processing '{out_prefix}.npy'...", "\n")
+    if has_rt_output:
         assert grouped_ribo_ids is not {}, "No grouped_ribo_id dictionary provided"
         prefix = "ribotie_"
-        tool_headers = ["ribotie_score", "ribotie_rank"]
+        tool_headers = tool_scores + ["ribotie_rank"]
         tr_ids = np.array([o[0].split(b"|")[1] for o in ribo_output])
         group = ribo_output[0][0].split(b"|")[0].decode()
         pred_to_h5_args = get_str2str_idx_map(tr_ids, f_tr_ids)
         preds = [o[1] for o in ribo_output]
-        df = pl.DataFrame(
-            {
-                "transcript_id": tr_ids,
-                "h5_idx": pred_to_h5_args,
-                f"{prefix}score": preds,
-            },
-            strict=False,
-        )
+        if has_tt_output:
+            tt_scores = f["transcript/tis_transformer_score"][:][pred_to_h5_args]
+            df = pl.DataFrame(
+                {
+                    "transcript_id": tr_ids,
+                    "h5_idx": pred_to_h5_args,
+                    f"ribotie_score": preds,
+                    f"tis_transformer_score": tt_scores,
+                }
+            ).with_columns(
+                pl.col(f"tis_transformer_score").map_elements(list, pl.List(pl.Float32))
+            )
+        else:
+            df = pl.DataFrame(
+                {
+                    "transcript_id": tr_ids,
+                    "h5_idx": pred_to_h5_args,
+                    f"ribotie_score": preds,
+                },
+                strict=False,
+            )
         out_headers = tool_headers + STANDARD_OUT_HEADERS + RIBO_OUT_HEADERS + xtr_heads
-
     else:
         prefix = "tis_transformer_"
         # bring columns to forefront in final output table
         tool_headers = ["tis_transformer_score", "tis_transformer_rank"]
-        xtr_heads.remove("tis_transformer_score")
-        mask = [len(o) > 0 for o in np.array(f["transcript/tis_transformer_score"])]
         df = pl.DataFrame(
             {
                 "transcript_id": f["transcript/transcript_id"][:],
-                "h5_idx": np.where(mask)[0],
+                "h5_idx": np.arange(len(f_tr_ids)),
                 f"{prefix}score": f["transcript/tis_transformer_score"][:],
             }
         ).with_columns(
-            pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float64)),
+            pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float32)),
         )
         out_headers = tool_headers + STANDARD_OUT_HEADERS + xtr_heads
-    print(f"{time()}: Parsing ORF information...")
+
+    prtime(f"Parsing ORF information...", "\t")
     df = df.with_columns(
         TIS_idx=(
             pl.col(f"{prefix}score")
-            .list.eval((pl.element() > prob_cutoff).arg_true())
+            .list.eval(
+                ((pl.element() > prob_cutoff) & pl.element().is_not_nan()).arg_true()
+            )
             .cast(pl.List(pl.Int32))
         ),
-        corr_dist=pl.lit(dist * 3),
     ).sort("h5_idx")
+
     # filter transcripts with zero predictions
     tr_mask = df["TIS_idx"].list.len() > 0
-    # assert tr_mask.any(), f"!-> No predictions higher than {prob_cutoff}"
     df = df.filter(tr_mask)
+
+    # Select only the scores that are above the prob_cutoff
+    for score in tool_scores:
+        df = df.with_columns(pl.col(score).list.gather(pl.col("TIS_idx")).alias(score))
+
+    # check for positive set size and winnow if necessary
+    max_preds = 1000000
+    if df["TIS_idx"].explode().shape[0] > max_preds:
+        print(
+            f"\t\t-- Too many predictions, filtering to top {max_preds}. Consider increasing prob_cutoff"
+        )
+        # explode -> sort -> head -> groupby
+        df = df.explode(tool_scores + ["TIS_idx"]).sort(
+            f"{prefix}score", descending=True
+        )
+        df = df.head(max_preds)
+        df = df.group_by(["transcript_id", "h5_idx"]).agg(tool_scores + ["TIS_idx"])
+
+    # add transcript/gene information before exploding df
     df = df.with_columns(
         [
             pl.Series(name=h, values=f[f"transcript/{h}"][:][df["h5_idx"]])
             for h in f_headers
         ]
     )
+
     # devectorize and Listify numpy arrays
     df = df.with_columns(
         (
@@ -371,18 +407,12 @@ def construct_output_table(
         pl.col(f"{prefix}score").map_elements(list, pl.List(pl.Float64)),
         pl.col(pl.Binary).cast(pl.String),
     )
-    # filter transcripts with zero predictions
-    df = (
-        df.with_columns(
-            (pl.col(f"{prefix}score").list.gather(pl.col("TIS_idx"))).alias(
-                f"{prefix}score"
-            ),
-        )
-        .explode([f"{prefix}score", "TIS_idx"])
-        .sort("h5_idx")
-    )
+    # Explode df to get ORF predictions per row
+    df = df.explode(tool_scores + ["TIS_idx"]).sort("h5_idx")
     # if non-canonical ATG, find in-frame ATGs to 'correct' prediction to
     if correction:
+        # Set corr_dist to max from which in-frame codons are derived
+        df = df.with_columns(corr_dist=pl.lit(dist * 3))
         df = (
             # 1. Calc upstream cut as multiple of 3 and not lower than 0
             df.with_columns(
@@ -548,8 +578,8 @@ def construct_output_table(
             )
         )
     df = df.join(df_tmp.drop(sel_cols[1:]), on="ORF_id", how="left")
-    if has_ribo_output:
-        print(f"{time()}: Parsing ribo-seq information...")
+    if has_rt_output:
+        prtime("Parsing ribo-seq information...", "\t")
         df_ribo = parse_ribo_data(df, f, h5_path, grouped_ribo_ids[group], parallel)
         if len(df_ribo) > 0:
             df = df.join(df_ribo[:, [0, *range(10, 18)]], on="ORF_id", how="inner")
@@ -561,12 +591,12 @@ def construct_output_table(
     if len(df) == 0:
         out_dicts = {n: pl.Series(n, []) for n in out_headers}
         df_out = pl.DataFrame(out_dicts).rename(RENAME_HEADERS)
-        df_out.write_csv(f"{out_prefix}.unfiltered.csv")
+        df_out.write_csv(f"{out_prefix}.redundant.csv")
         df_out.write_csv(f"{out_prefix}.csv")
-        print(f"!-> The positive set is empty!")
+        print(f"\t !-> The positive set is empty!")
         return df_out, df_out
     # detect ORF biotypes, evaluate whether transcript biotype is given
-    print(f"{time()}: Parsing ORF type information...")
+    prtime("Parsing ORF type information...", "\t")
     if "transcript_biotype" in df.columns:
         biotype_expr = pl.col("transcript_biotype") == "lncRNA"
     else:
@@ -606,7 +636,7 @@ def construct_output_table(
             .otherwise(pl.lit("varRNA-ORF"))
         )
     )
-    print(f"{time()}: Detecting CDS variants...")
+    prtime("Detecting CDS variants...", "\t")
     out_cols = ["ORF_coords", "ORF_exons"]
     out_types = [pl.List(pl.Int64), pl.List(pl.Int64)]
     attrs = ["TIS_coord", "LTS_coord", "strand", "exon_coords"]
@@ -679,17 +709,50 @@ def construct_output_table(
 
     df = pl.concat(df_grps)
     df = df.with_columns(pl.col("shared_in_frame_CDS_frac").truediv(pl.col("ORF_len")))
-    # Filter CDS variants and custom filters
+    # Change ORF_coord delimiter to ";"
+    if return_ORF_coords:
+        df = df.with_columns(
+            ORF_coords=pl.col("ORF_coords").cast(pl.List(pl.String)).list.join(";")
+        )
+        out_headers += ["ORF_coords"]
+
+    # --- Filter CDS variants and custom filters ---
+    # Custom filters
     conds_xtr = [
         pl.col("TTS_on_transcript") if exclude_invalid_TTS else pl.lit(True),
         pl.col("start_codon").str.contains(start_codons),
         pl.col("ORF_len") >= min_ORF_len,
     ]
+    c_xtr = pl.lit(True).and_(*conds_xtr)
+    df = df.filter(c_xtr)
+    # CDS variant filtering
+    if len(df) > 0:
+        df_filt = filter_CDS_variants(df)
+    else:
+        df_filt = df
+
+    # --- Save to csv ---
+    for df_, label in zip([df, df_filt], [".redundant", ""]):
+        df_ = (
+            df_.with_columns(
+                (
+                    pl.col(f"{prefix}score").rank(method="ordinal", descending=True)
+                ).alias(f"{prefix}rank")
+            )
+            .select(out_headers)
+            .sort(f"{prefix}rank")
+            .rename(RENAME_HEADERS)
+        )
+        df_.write_csv(f"{out_prefix}{label}.csv", float_precision=4)
+
+    return df, df_filt
+
+
+def filter_CDS_variants(df):
     conds_cds_var = [
         pl.col("has_CDS_clones") == False,
         pl.col("shared_in_frame_CDS_frac") < 1,
     ]
-    c_xtr = pl.lit(True).and_(*conds_xtr)
     c_clone = pl.col("has_CDS_clones") == False
     c_cds_var = pl.lit(True).and_(*conds_cds_var)
     c_1 = pl.col("ORF_type") == "annotated CDS"
@@ -713,31 +776,21 @@ def construct_output_table(
     df_filts = []
     for _, df_grp in df.group_by("TIS_coord"):
         df_filt = df_grp.filter(
-            pl.when((c_1 & c_xtr).any())
-            .then(c_1 & c_xtr)
-            .when((c_2 & c_xtr & c_clone).any())
-            .then(c_2 & c_xtr & c_clone)
-            .when((c_3 & c_xtr & c_cds_var).any())
-            .then(c_3 & c_xtr & c_cds_var)
-            .otherwise(c_xtr & c_cds_var)
+            # If annotated CDS then annotated CDS
+            pl.when(c_1.any()).then(c_1)
+            # elif trunc/extension & not CDS clone
+            .when((c_2 & c_clone).any()).then(c_2 & c_clone)
+            # elif type 3 & not CDS variant
+            .when((c_3 & c_cds_var).any()).then(c_3 & c_cds_var)
+            # else OK if not CDS clones and in_frame_CDS_frac < 1
+            .otherwise(c_cds_var)
+            # if either annotated or protein coding present, select these otherwise OK
             & pl.when((c_1 | c_bio).any()).then(c_1 | c_bio).otherwise(pl.lit(True))
         )
         df_filts.append(df_filt)
     df_filt = pl.concat(df_filts)
-    for df_, label in zip([df, df_filt], [".unfiltered", ""]):
-        df_ = (
-            df_.with_columns(
-                (
-                    pl.col(f"{prefix}score").rank(method="ordinal", descending=True)
-                ).alias(f"{prefix}rank")
-            )
-            .select(out_headers)
-            .sort(f"{prefix}rank")
-            .rename(RENAME_HEADERS)
-        )
-        df_.write_csv(f"{out_prefix}{label}.csv")
 
-    return df, df_filt
+    return df_filt
 
 
 def process_seq_preds(ids, preds, seqs, min_prob):
@@ -864,38 +917,33 @@ def csv_to_gtf(h5_path, df, out_prefix, caller, exclude_annotated=False):
             stop_parts, stop_exons = transcript_region_to_exons(
                 TTS, stop_codon_stop, strand, exon_coord
             )
-        else:
-            stop_parts, stop_exons = (
-                np.empty(np.shape(start_parts)),
-                np.empty(np.shape(start_exons)),
-            )
         cds_parts, cds_exons = transcript_region_to_exons(TIS, LTS, strand, exon_coord)
         if strand == "+":
             tr_coord = np.array([exon_coord[0], exon_coord[-1]])
         else:
             tr_coord = np.array([exon_coord[-2], exon_coord[1]])
-        exons = np.arange(1, len(exon_coord) // 2 + 1)
-        coords_packed = np.vstack(
-            [
-                tr_coord.reshape(-1, 2),
-                exon_coord.reshape(-1, 2),
-                np.array(start_parts).reshape(-1, 2),
-                np.array(cds_parts).reshape(-1, 2),
-                np.array(stop_parts).reshape(-1, 2),
-            ]
-        ).astype(int)
-        exons_packed = np.hstack(
-            [[-1], exons, start_exons, cds_exons, stop_exons]
-        ).reshape(-1, 1)
-        features_packed = np.hstack(
-            [
-                np.full(1, "transcript"),
-                np.full(len(exons), "exon"),
-                np.full(len(start_exons), "start_codon"),
-                np.full(len(cds_exons), "CDS"),
-                np.full(len(stop_exons), "stop_codon"),
-            ]
-        ).reshape(-1, 1)
+        exons = np.arange(1, len(exon_coord) // 2 + 1, dtype=int)
+
+        coords_packed = [
+            tr_coord.reshape(-1, 2),
+            exon_coord.reshape(-1, 2),
+            np.array(start_parts).reshape(-1, 2),
+            np.array(cds_parts).reshape(-1, 2),
+        ]
+        features_packed = [
+            np.full(1, "transcript"),
+            np.full(len(exons), "exon"),
+            np.full(len(start_exons), "start_codon"),
+            np.full(len(cds_exons), "CDS"),
+        ]
+        exons_packed = [[-1], exons, start_exons, cds_exons]
+        if TTS != -1:
+            coords_packed.append(np.array(stop_parts).reshape(-1, 2))
+            features_packed.append(np.full(len(stop_exons), "stop_codon"))
+            exons_packed.append(stop_exons)
+        coords_packed = np.vstack(coords_packed).astype(int)
+        features_packed = np.hstack(features_packed).reshape(-1, 1)
+        exons_packed = np.hstack(exons_packed).reshape(-1, 1)
         gff_parts.append(np.hstack([coords_packed, exons_packed, features_packed]))
     gtf_lines = []
     for i, row in enumerate(df.iter_rows(named=True)):
@@ -911,7 +959,7 @@ def csv_to_gtf(h5_path, df, out_prefix, caller, exclude_annotated=False):
             if feature not in ["transcript"]:
                 property_list.insert(
                     3,
-                    f'exon_number "{exon}',
+                    f'exon_number "{int(exon)}',
                 )
             if feature not in ["transcript", "exon"]:
                 entries = np.array(

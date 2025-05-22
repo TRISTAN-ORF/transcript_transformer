@@ -70,14 +70,35 @@ def test_sequence_training():
         "out/tis_transformer.npy",
         "out/tis_transformer.csv",
         "out/tis_transformer.gtf",
-        "out/tis_transformer.unfiltered.csv",
-        "out/tis_transformer.unfiltered.gtf",
+        "out/tis_transformer.redundant.csv",
+        "out/tis_transformer.redundant.gtf",
     ]
     remove_if_exists(files)
 
     command = [
         "tis_transformer",
         "configs/tis_transformer_training.yml",
+    ]
+
+    subprocess.run(command, check=True, text=True, capture_output=True)
+
+    assert_if_exists(files)
+
+
+def test_sequence_predicting():
+    files = [
+        "out/tis_transformer.npy",
+        "out/tis_transformer.csv",
+        "out/tis_transformer.gtf",
+        "out/tis_transformer.redundant.csv",
+        "out/tis_transformer.redundant.gtf",
+    ]
+    remove_if_exists(files)
+
+    command = [
+        "tis_transformer",
+        "configs/tis_transformer_predicting.yml",
+        "configs/tis_transformer_params.yml",
     ]
 
     subprocess.run(command, check=True, text=True, capture_output=True)
@@ -130,10 +151,10 @@ def test_ribotie_bam_data_loading():
 
 def test_ribotie_pretraining():
     files = [
-        f"out/pretrain_f{i}.{ext}"
+        f"out/rt_pretraining_pretrain_f{i}.{ext}"
         for i, ext in list(product(range(2), ["npy", "csv", "gtf"]))
     ] + [
-        f"out/pretrain_f{i}.unfiltered.{ext}"
+        f"out/rt_pretraining_pretrain_f{i}.redundant.{ext}"
         for i, ext in list(product(range(2), ["csv", "gtf"]))
     ]
 
@@ -150,10 +171,10 @@ def test_ribotie_pretraining():
 
 def test_ribotie_training():
     files = [
-        f"out/sample_{i}.{ext}"
+        f"out/rt_training_sample_{i}.{ext}"
         for i, ext in list(product(range(1, 4), ["npy", "csv", "gtf"]))
     ] + [
-        f"out/sample_{i}.unfiltered.{ext}"
+        f"out/rt_training_sample_{i}.redundant.{ext}"
         for i, ext in list(product(range(1, 4), ["csv", "gtf"]))
     ]
     remove_if_exists(files)

@@ -1,5 +1,6 @@
 # Define global variables
 
+# --- BIOLOGICAL SEQUENCE DICTS ---
 CDN_PROT_DICT = {
     "ATA": "I",
     "ATC": "I",
@@ -105,6 +106,7 @@ DNA_IDX_DICT = {
 IDX_PROT_DICT = {v: k for k, v in PROT_IDX_DICT.items()}
 IDX_DNA_DICT = {v: k for k, v in DNA_IDX_DICT.items()}
 
+# --- DATA PROCESSING VARIABLES ---
 REQ_HEADERS = [
     "seqname",
     "feature",
@@ -226,7 +228,13 @@ RIBO_OUT_HEADERS = [
     "reads_skew",
 ]
 
+# --- PRETRAINED MODELS ---
+TT_DICT = {
+    "human" : "Homo_sapiens.GRCh38.113_params.tt.yml",
+    "mouse" : ""
+}
 
+# --- MultiQC VARIABLES ---
 RIBOTIE_MQC_HEADER = """
 # parent_id: {id}
 # parent_name: {name}

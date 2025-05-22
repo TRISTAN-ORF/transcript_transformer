@@ -1,0 +1,2 @@
+recursive-include transcript_transformer/configs *
+recursive-include transcript_transformer/pretrained *
