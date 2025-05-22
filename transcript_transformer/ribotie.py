@@ -3,13 +3,12 @@ import sys
 import numpy as np
 import yaml
 import h5py
-from importlib import resources as impresources
+from importlib.resources import files
+from typing import cast
 from copy import deepcopy
 
 from .transcript_transformer import train, predict
 from .argparser import Parser
-from .pretrained import ribotie_models as rt_models
-from . import configs
 from .data import process_seq_data, process_ribo_data
 from .processing import construct_output_table, csv_to_gtf, create_multiqc_reports
 from .util_functions import (
@@ -46,7 +45,8 @@ def parse_args():
     parser.add_comp_args()
     parser.add_training_args()
     parser.add_train_loading_args()
-    default_config = f"{impresources.files(configs) / 'defaults.rt.yml'}"
+    default_config = files("transcript_transformer.configs").joinpath("defaults.tt.yml")
+    default_config = os.fspath(cast(os.PathLike, default_config))
     args = parser.parse_arguments(sys.argv[1:], [default_config])
     if args.out_prefix is None:
         args.out_prefix = f"{os.path.splitext(args.conf[0])[0]}"
@@ -182,11 +182,12 @@ def main():
                 folds = args.pretrained_model["folds"]
             else:
                 print(f"\t -- Using default pre-trained RiboTIE model (Human)")
-                args = load_args(
-                    (impresources.files(rt_models) / "50perc_06_23.rt.yml"), args
-                )
+                model_params = files(
+                    "transcript_transformer.pretrained.rt_models"
+                ).joinpath("50perc_06_23.rt.yml")
+                args = load_args(model_params, args)
                 finetune = True
-                args.model_dir = str(impresources.files(rt_models)._paths[0])
+                args.model_dir = files("transcript_transformer.pretrained.rt_models")
             if finetune:
                 folds = args.pretrained_model["folds"]
             else:

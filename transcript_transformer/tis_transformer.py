@@ -4,7 +4,8 @@ from copy import deepcopy
 import numpy as np
 import h5py
 import yaml
-from importlib import resources as impresources
+from typing import cast
+from importlib.resources import files
 
 from .transcript_transformer import train, predict
 from .argparser import Parser
@@ -14,7 +15,6 @@ from .util_functions import (
     mv_ckpt_to_out_dir,
     merge_outputs,
 )
-from . import configs
 from .data import process_seq_data
 from .processing import construct_output_table, csv_to_gtf, create_multiqc_reports
 
@@ -40,11 +40,13 @@ def parse_args():
     parser.add_train_loading_args()
     parser.add_evaluation_args()
     parser.add_architecture_args()
-    default_config = f"{impresources.files(configs) / 'defaults.tt.yml'}"
+    default_config = files("transcript_transformer.configs").joinpath("defaults.tt.yml")
+    default_config = os.fspath(cast(os.PathLike, default_config))
     args = parser.parse_arguments(sys.argv[1:], [default_config])
     if args.out_prefix is None:
         print(args.conf[0])
         args.out_prefix = f"{os.path.splitext(args.h5_path)[0]}_"
+
     return args
 
 

@@ -4,10 +4,10 @@ import yaml
 import argparse
 import importlib
 import numpy as np
-from importlib import resources as impresources
+from typing import cast
+from importlib.resources import files
 
 from transcript_transformer import TT_DICT
-from .pretrained import tis_transformer_models as tt_models
 from .util_functions import load_args
 
 
@@ -640,10 +640,10 @@ class Parser(argparse.ArgumentParser):
             file = f"{args.out_prefix}_params.yml"
             # args.model takes precedence over args.trained_model or default output model
             if args.model is not None:
-                args = load_args(
-                    (impresources.files(tt_models) / TT_DICT[args.model]), args
-                )
-                args.model_dir = str(impresources.files(tt_models)._paths[0])
+                model_path = files("transcript_transformer.pretrained.tt_models")
+                args.model_dir = os.fspath(cast(os.PathLike, model_path))
+                model_config = args.model_dir.joinpath(TT_DICT[args.model])
+                args = load_args(os.fspath(model_config), args)
             # If output model exists and no other model is listed
             elif os.path.isfile(file) and ("trained_model" not in args):
                 args = load_args(file, args)
